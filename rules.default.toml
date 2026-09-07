@@ -1,0 +1,75 @@
+# Default routing rules for mac-organizer.
+# Rules are evaluated top-to-bottom per source folder; first match wins.
+# Unmatched files are left where they are.
+
+# --- Screenshots -----------------------------------------------------------
+[[rule]]
+source = "@@SCREENSHOT_DIR@@"
+glob = "Screenshot *"
+ext = ["png", "jpg", "jpeg"]
+action = "move_and_timestamp"
+dest = "~/Media/Screenshots/%Y-%m"
+
+[[rule]]
+source = "@@SCREENSHOT_DIR@@"
+glob = "Screen Recording *"
+ext = ["mov", "mp4"]
+action = "move_and_timestamp"
+dest = "~/Media/Screenshots/%Y-%m"
+
+# --- Desktop: sweep everything into the inbox -----------------------------
+[[rule]]
+source = "~/Desktop"
+action = "move"
+dest = "~/Inbox"
+min_age_seconds = 60
+
+# --- Downloads -----------------------------------------------------------
+[[rule]]
+source = "~/Downloads"
+ext = ["md", "markdown", "txt"]
+action = "move"
+dest = "~/Notes/00-Inbox"
+
+[[rule]]
+source = "~/Downloads"
+ext = ["png", "jpg", "jpeg", "gif", "webp", "heic"]
+action = "move"
+dest = "~/Media/Images"
+
+[[rule]]
+source = "~/Downloads"
+ext = ["pdf", "doc", "docx", "pages", "xls", "xlsx", "csv", "ppt", "pptx", "key"]
+action = "move"
+dest = "~/Documents/Inbox"
+
+[[rule]]
+source = "~/Downloads"
+ext = ["dmg", "pkg", "zip", "tar", "gz", "tgz"]
+action = "move"
+dest = "~/Downloads/Installers"
+
+# --- Inbox: the routing hub -------------------------------------------------
+[[rule]]
+source = "~/Inbox"
+ext = ["md", "markdown", "txt"]
+action = "move"
+dest = "~/Notes/00-Inbox"
+
+[[rule]]
+source = "~/Inbox"
+ext = ["png", "jpg", "jpeg", "gif", "webp", "heic"]
+action = "move"
+dest = "~/Media/Images"
+
+[[rule]]
+source = "~/Inbox"
+ext = ["pdf", "doc", "docx", "pages", "xls", "xlsx", "csv", "ppt", "pptx", "key"]
+action = "move"
+dest = "~/Documents/Inbox"
+
+[[rule]]
+source = "~/Inbox"
+ext = ["dmg", "pkg", "zip", "tar", "gz", "tgz"]
+action = "move"
+dest = "~/Downloads/Installers"
