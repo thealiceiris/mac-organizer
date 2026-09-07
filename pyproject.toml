@@ -1,3 +1,9 @@
+[project]
+name = "mac-organizer"
+version = "0.1.0"
+description = "Automatic file router and Obsidian vault setup for macOS."
+requires-python = ">=3.11"
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]

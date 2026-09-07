@@ -43,6 +43,8 @@ def detect_screenshot_dir(runner=subprocess.run) -> Path:
         value = (result.stdout or "").strip()
         if value:
             return Path(value).expanduser()
+    # FileNotFoundError is a subclass of OSError; named for documentation
+    # (no `defaults` binary on PATH is the common non-macOS case).
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         pass
     return Path("~/Desktop").expanduser()
@@ -62,12 +64,29 @@ def write_rules(default_path: Path, out_path: Path, screenshot_dir: Path) -> boo
     return True
 
 
-def agent_labels() -> list[str]:
-    watch = [Path(s).expanduser().name.lower() for s in WATCHED_SOURCES]
-    return (
-        [f"{LABEL_PREFIX}.{name}" for name in watch]
-        + [f"{LABEL_PREFIX}.screenshots", f"{LABEL_PREFIX}.sweep"]
-    )
+def watch_dirs(screenshot_dir: Path) -> list[Path]:
+    """Directories to watch, in order, without duplicates.
+
+    On a stock Mac the screenshot location is unset and resolves to
+    ``~/Desktop`` — already a watched source. Writing a second agent for it
+    would fire two routers on every Desktop change.
+    """
+    dirs = [Path(s).expanduser() for s in WATCHED_SOURCES]
+    dirs.append(Path(screenshot_dir).expanduser())
+    return list(dict.fromkeys(dirs))
+
+
+def agent_label(directory: Path, screenshot_dir: Path) -> str:
+    base = [Path(s).expanduser() for s in WATCHED_SOURCES]
+    if directory not in base and directory == Path(screenshot_dir).expanduser():
+        return f"{LABEL_PREFIX}.screenshots"
+    return f"{LABEL_PREFIX}.{directory.name.lower()}"
+
+
+def agent_labels(screenshot_dir: Path) -> list[str]:
+    """The labels install_agents writes: one per watched dir, plus the sweep."""
+    dirs = watch_dirs(screenshot_dir)
+    return [agent_label(d, screenshot_dir) for d in dirs] + [f"{LABEL_PREFIX}.sweep"]
 
 
 def install_agents(
@@ -81,28 +100,25 @@ def install_agents(
     sd = state_dir()
     written: list[Path] = []
 
-    watch_dirs = [Path(s).expanduser() for s in WATCHED_SOURCES]
-    for source in watch_dirs:
-        label = f"{LABEL_PREFIX}.{source.name.lower()}"
+    dirs = watch_dirs(screenshot_dir)
+    for source in dirs:
+        label = agent_label(source, screenshot_dir)
         target = agents_dir / f"{label}.plist"
         target.write_bytes(plist.render_watch(label, python, route_py, source, sd))
         written.append(target)
 
-    ss_label = f"{LABEL_PREFIX}.screenshots"
-    ss_target = agents_dir / f"{ss_label}.plist"
-    ss_target.write_bytes(
-        plist.render_watch(ss_label, python, route_py, screenshot_dir, sd)
-    )
-    written.append(ss_target)
-
     sweep_label = f"{LABEL_PREFIX}.sweep"
     sweep_target = agents_dir / f"{sweep_label}.plist"
     sweep_target.write_bytes(
-        plist.render_sweep(
-            sweep_label, python, route_py, watch_dirs + [screenshot_dir], interval, sd
-        )
+        plist.render_sweep(sweep_label, python, route_py, dirs, interval, sd)
     )
     written.append(sweep_target)
+
+    # Drop agents left over from an earlier install with a different watch set
+    # (e.g. a custom screenshot folder that has since gone back to ~/Desktop).
+    for stale in sorted(agents_dir.glob(f"{LABEL_PREFIX}.*.plist")):
+        if stale not in written:
+            stale.unlink()
     return written
 
 

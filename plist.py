@@ -6,13 +6,18 @@ import plistlib
 from pathlib import Path
 
 
-def _base(label: str, program_args: list[str], state_dir: Path) -> dict:
+def _base(
+    label: str,
+    program_args: list[str],
+    state_dir: Path,
+    run_at_load: bool = False,
+) -> dict:
     return {
         "Label": label,
         "ProgramArguments": program_args,
         "StandardOutPath": str(Path(state_dir) / f"{label}.out.log"),
         "StandardErrorPath": str(Path(state_dir) / f"{label}.err.log"),
-        "RunAtLoad": False,
+        "RunAtLoad": run_at_load,
     }
 
 
@@ -33,8 +38,10 @@ def render_sweep(
     state_dir: Path,
 ) -> bytes:
     data = _base(
-        label, [python, str(route_py), *(str(d) for d in dirs)], state_dir
+        label,
+        [python, str(route_py), *(str(d) for d in dirs)],
+        state_dir,
+        run_at_load=True,
     )
     data["StartInterval"] = interval
-    data["RunAtLoad"] = True
     return plistlib.dumps(data)
