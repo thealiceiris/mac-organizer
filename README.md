@@ -23,8 +23,10 @@ cd ~/.mac-organizer
 1. Runs `setup.py`, which creates `~/Inbox`, `~/Media/Images`,
    `~/Media/Screenshots`, `~/Documents/Inbox`, `~/Downloads/Installers`, and
    the state directory; detects your screenshot location; generates
-   `rules.toml`; installs five `launchd` agents; and copies the Obsidian
-   vault template to `~/Notes` (never overwriting existing files).
+   `rules.toml`; installs the `launchd` agents (one per watched folder plus a
+   10-minute sweep — five, or four when your screenshots already land in a
+   watched folder); and copies the Obsidian vault template to `~/Notes`
+   (never overwriting existing files).
 2. Loads the agents with `launchctl`.
 3. Prints a dry-run preview of what the router would do right now.
 
@@ -55,8 +57,14 @@ are skipped.
 Edit `~/.mac-organizer/rules.toml`. Each `[[rule]]` has a `source` folder, an
 `action` (`move`, `move_and_timestamp`, or `skip`), a `dest`, and optional
 `ext`, `glob`, and `min_age_seconds` filters. Rules are evaluated top to
-bottom per source folder; the first match wins. No restart needed — the next
-run picks up the changes.
+bottom per source folder; the first match wins.
+
+Changing the filters or the `dest` of a rule needs no restart — the next run
+picks up the changes. **Adding a rule with a new `source` folder does need
+`./install.sh` re-run**: the agents watch a fixed set of folders
+(`~/Downloads`, `~/Desktop`, `~/Inbox`, and your screenshot folder), so a
+folder nothing watches is never visited. `dest` folders may be anywhere under
+your home directory; a destination outside `$HOME` is refused and logged.
 
 To preview without moving anything:
 
@@ -66,8 +74,15 @@ python3 ~/.mac-organizer/route.py --dry-run
 
 ## Logs
 
-Every move is logged to `~/.local/state/mac-organizer/actions.log`. Agent
-stdout/stderr go to `~/.local/state/mac-organizer/com.mac-organizer.*.log`.
+Every move is logged to `~/.local/state/mac-organizer/actions.log`, one line
+per action, naming the path the file actually landed on. Agent stdout/stderr
+go to `~/.local/state/mac-organizer/com.mac-organizer.*.log`.
+
+Several agents can fire at once, so each run takes an exclusive lock on
+`~/.local/state/mac-organizer/route.lock`; a run that finds the lock held
+exits immediately (the next trigger or the 10-minute sweep picks the work
+up). Destination names are claimed atomically, so even concurrent runs never
+overwrite a file — collisions get a ` -2` suffix.
 
 ## After changing your screenshot location or upgrading Python
 
