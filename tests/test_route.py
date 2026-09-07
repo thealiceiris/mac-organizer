@@ -1,4 +1,7 @@
+import time
 from pathlib import Path
+
+import pytest
 
 import route
 
@@ -72,3 +75,50 @@ def test_default_rules_file_loads(tmp_path):
     assert Path("~/Desktop").expanduser() in route.sources(rules)
     assert Path("~/Inbox").expanduser() in route.sources(rules)
     assert all(r.action in {"move", "move_and_timestamp", "skip"} for r in rules)
+
+
+def _rule(**kw):
+    kw.setdefault("source", Path("~/Downloads").expanduser())
+    kw.setdefault("action", "move")
+    return route.Rule(**kw)
+
+
+def test_should_skip_new_and_partial_and_dotfiles(tmp_path, make_file):
+    now = time.time()
+    fresh = make_file(tmp_path / "a.png", age_seconds=5)
+    old = make_file(tmp_path / "b.png", age_seconds=3600)
+    partial = make_file(tmp_path / "c.crdownload", age_seconds=3600)
+    dot = make_file(tmp_path / ".DS_Store", age_seconds=3600)
+
+    assert route.should_skip(fresh, now) is True
+    assert route.should_skip(old, now) is False
+    assert route.should_skip(partial, now) is True
+    assert route.should_skip(dot, now) is True
+
+
+def test_rule_matches_ext_glob_and_age(tmp_path, make_file):
+    now = time.time()
+    f = make_file(tmp_path / "Screenshot 2026.png", age_seconds=3600)
+
+    assert route.rule_matches(_rule(ext=frozenset({"png"})), f, now) is True
+    assert route.rule_matches(_rule(ext=frozenset({"pdf"})), f, now) is False
+    assert route.rule_matches(_rule(glob="Screenshot *"), f, now) is True
+    assert route.rule_matches(_rule(glob="Recording *"), f, now) is False
+    assert route.rule_matches(_rule(min_age_seconds=99999), f, now) is False
+
+
+def test_match_rule_first_match_wins_and_skip_shadows(tmp_path, make_file):
+    now = time.time()
+    f = make_file(tmp_path / "keep.png", age_seconds=3600)
+
+    rules = [
+        _rule(glob="keep.*", action="skip"),
+        _rule(ext=frozenset({"png"}), dest="~/Media/Images"),
+    ]
+    assert route.match_rule(f, rules, now) is None
+
+    rules2 = [
+        _rule(ext=frozenset({"png"}), dest="~/Media/Images"),
+        _rule(ext=frozenset({"png"}), dest="~/other"),
+    ]
+    assert route.match_rule(f, rules2, now).dest == "~/Media/Images"
