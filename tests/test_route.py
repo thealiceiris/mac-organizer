@@ -208,3 +208,73 @@ def test_apply_action_dry_run_moves_nothing(tmp_path, make_file, monkeypatch):
     assert f.exists()
     assert not (tmp_path / "Media/Images" / "a.png").exists()
     assert "DRYRUN" in log.read_text()
+
+
+def _write_rules(path, home):
+    path.write_text(
+        f"""
+[[rule]]
+source = "{home}/Downloads"
+ext = ["png"]
+action = "move"
+dest = "{home}/Media/Images"
+
+[[rule]]
+source = "{home}/Downloads"
+ext = ["pdf"]
+action = "move"
+dest = "{home}/Documents/Inbox"
+"""
+    )
+
+
+def test_process_dir_routes_and_is_idempotent(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    make_file(tmp_path / "Downloads" / "a.png")
+    make_file(tmp_path / "Downloads" / "b.pdf")
+    make_file(tmp_path / "Downloads" / "c.iso")  # unmatched, stays
+    rules_file = tmp_path / "rules.toml"
+    _write_rules(rules_file, tmp_path)
+    rules = route.load_rules(rules_file)
+    log = tmp_path / "state/actions.log"
+
+    first = route.process_dir(tmp_path / "Downloads", rules, time.time(), False, log)
+    assert len(first) == 2
+    assert (tmp_path / "Media/Images/a.png").exists()
+    assert (tmp_path / "Documents/Inbox/b.pdf").exists()
+    assert (tmp_path / "Downloads/c.iso").exists()
+
+    lines_after_first = log.read_text().count("\n")
+    second = route.process_dir(tmp_path / "Downloads", rules, time.time(), False, log)
+    assert second == []
+    assert log.read_text().count("\n") == lines_after_first
+
+
+def test_main_dry_run_moves_nothing(tmp_path, make_file, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    make_file(tmp_path / "Downloads" / "a.png")
+    rules_file = tmp_path / "rules.toml"
+    _write_rules(rules_file, tmp_path)
+    log = tmp_path / "state/actions.log"
+
+    rc = route.main(
+        ["--dry-run", "--rules", str(rules_file), "--log", str(log),
+         str(tmp_path / "Downloads")]
+    )
+
+    assert rc == 0
+    assert (tmp_path / "Downloads" / "a.png").exists()
+    assert "DRYRUN" in capsys.readouterr().out
+
+
+def test_main_defaults_to_rule_sources(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    make_file(tmp_path / "Downloads" / "a.png")
+    rules_file = tmp_path / "rules.toml"
+    _write_rules(rules_file, tmp_path)
+    log = tmp_path / "state/actions.log"
+
+    rc = route.main(["--rules", str(rules_file), "--log", str(log)])
+
+    assert rc == 0
+    assert (tmp_path / "Media/Images/a.png").exists()

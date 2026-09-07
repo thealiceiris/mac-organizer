@@ -142,3 +142,61 @@ def apply_action(action: Action, dry_run: bool, log_path: Path) -> None:
     action.dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(action.src), str(action.dst))
     _log(log_path, "MOVE", action.src, action.dst)
+
+
+DEFAULT_LOG = Path("~/.local/state/mac-organizer/actions.log").expanduser()
+
+
+def process_dir(
+    directory: Path,
+    rules: list[Rule],
+    now: float,
+    dry_run: bool,
+    log_path: Path,
+) -> list[Action]:
+    dir_rules = [r for r in rules if r.source.resolve() == directory.resolve()]
+    done: list[Action] = []
+    for child in sorted(directory.iterdir()):
+        if not child.is_file():
+            continue
+        if should_skip(child, now):
+            continue
+        rule = match_rule(child, dir_rules, now)
+        if rule is None:
+            continue
+        try:
+            action = plan_action(child, rule, now)
+        except ValueError as exc:
+            _log(log_path, "ERROR", child, Path(str(exc)))
+            continue
+        if action is None:
+            continue
+        apply_action(action, dry_run, log_path)
+        done.append(action)
+    return done
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Route files in drop-zone folders.")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--rules",
+        type=Path,
+        default=Path(__file__).resolve().parent / "rules.toml",
+    )
+    parser.add_argument("--log", type=Path, default=DEFAULT_LOG)
+    parser.add_argument("paths", nargs="*", type=Path)
+    args = parser.parse_args(argv)
+
+    rules = load_rules(args.rules)
+    targets = args.paths or sources(rules)
+    now = time.time()
+    for target in targets:
+        directory = target.expanduser()
+        if directory.is_dir():
+            process_dir(directory, rules, now, args.dry_run, args.log)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
