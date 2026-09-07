@@ -63,9 +63,9 @@ def write_rules(default_path: Path, out_path: Path, screenshot_dir: Path) -> boo
 
 
 def agent_labels() -> list[str]:
-    suffixes = [s.strip("~/").lower() for s in WATCHED_SOURCES]
+    watch = [Path(s).expanduser().name.lower() for s in WATCHED_SOURCES]
     return (
-        [f"{LABEL_PREFIX}.{s}" for s in suffixes]
+        [f"{LABEL_PREFIX}.{name}" for name in watch]
         + [f"{LABEL_PREFIX}.screenshots", f"{LABEL_PREFIX}.sweep"]
     )
 
