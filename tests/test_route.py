@@ -1,4 +1,5 @@
 import datetime as _dt
+import os
 import time
 from pathlib import Path
 
@@ -148,3 +149,62 @@ def test_dedupe_inserts_counter(tmp_path):
     assert route.dedupe(tmp_path / "a.png") == tmp_path / "a -2.png"
     (tmp_path / "a -2.png").write_text("x")
     assert route.dedupe(tmp_path / "a.png") == tmp_path / "a -3.png"
+
+
+def test_plan_action_move_uses_original_name(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    f = make_file(tmp_path / "Downloads" / "report.pdf")
+    rule = _rule(action="move", dest=str(tmp_path / "Documents/Inbox"))
+
+    action = route.plan_action(f, rule, time.time())
+
+    assert action.dst == tmp_path / "Documents/Inbox" / "report.pdf"
+
+
+def test_plan_action_timestamp_renames(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    f = make_file(tmp_path / "shots" / "Screenshot 2026.png")
+    mtime = _dt.datetime(2026, 3, 9, 14, 5, 6).timestamp()
+
+    os.utime(f, (mtime, mtime))
+    rule = _rule(action="move_and_timestamp", dest=str(tmp_path / "Media/Screenshots/%Y-%m"))
+
+    action = route.plan_action(f, rule, time.time())
+
+    assert action.dst == tmp_path / "Media/Screenshots/2026-03" / "2026-03-09_14-05-06.png"
+
+
+def test_plan_action_rejects_dest_outside_home(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    f = make_file(tmp_path / "Downloads" / "x.pdf")
+    rule = _rule(action="move", dest="/tmp/escape")
+
+    with pytest.raises(ValueError):
+        route.plan_action(f, rule, time.time())
+
+
+def test_apply_action_moves_and_logs(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    f = make_file(tmp_path / "Downloads" / "a.png")
+    log = tmp_path / "state" / "actions.log"
+    action = route.Action(src=f, dst=tmp_path / "Media/Images" / "a.png")
+
+    route.apply_action(action, dry_run=False, log_path=log)
+
+    assert not f.exists()
+    assert (tmp_path / "Media/Images" / "a.png").read_text() == "x"
+    assert " MOVE " in log.read_text()
+    assert str(action.dst) in log.read_text()
+
+
+def test_apply_action_dry_run_moves_nothing(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    f = make_file(tmp_path / "Downloads" / "a.png")
+    log = tmp_path / "state" / "actions.log"
+    action = route.Action(src=f, dst=tmp_path / "Media/Images" / "a.png")
+
+    route.apply_action(action, dry_run=True, log_path=log)
+
+    assert f.exists()
+    assert not (tmp_path / "Media/Images" / "a.png").exists()
+    assert "DRYRUN" in log.read_text()

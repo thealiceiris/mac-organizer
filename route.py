@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
 import fnmatch
+import shutil
 import time
 import tomllib
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -103,3 +105,40 @@ def dedupe(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         counter += 1
+
+
+@dataclass(frozen=True)
+class Action:
+    src: Path
+    dst: Path
+
+
+def plan_action(path: Path, rule: Rule, now: float) -> Action | None:
+    mtime = path.stat().st_mtime
+    dest_dir = resolve_dest(rule.dest, mtime)
+    if not within_home(dest_dir):
+        raise ValueError(f"destination outside home: {dest_dir}")
+    if rule.action == "move_and_timestamp":
+        target = dest_dir / timestamp_name(mtime, path.suffix)
+    else:
+        target = dest_dir / path.name
+    if target == path:
+        return None
+    return Action(src=path, dst=dedupe(target))
+
+
+def _log(log_path: Path, verb: str, src: Path, dst: Path) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).isoformat()
+    with open(log_path, "a") as fh:
+        fh.write(f"{stamp}  {verb}  {src} -> {dst}\n")
+
+
+def apply_action(action: Action, dry_run: bool, log_path: Path) -> None:
+    if dry_run:
+        _log(log_path, "DRYRUN", action.src, action.dst)
+        print(f"DRYRUN  {action.src} -> {action.dst}")
+        return
+    action.dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(action.src), str(action.dst))
+    _log(log_path, "MOVE", action.src, action.dst)
