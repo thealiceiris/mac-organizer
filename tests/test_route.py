@@ -143,6 +143,61 @@ def test_timestamp_name():
     assert route.timestamp_name(mtime, ".png") == "2026-03-09_14-05-06.png"
 
 
+def test_resolve_dest_leaves_literal_percent_alone():
+    mtime = _dt.datetime(2026, 3, 9, 14, 5, 0).timestamp()
+    assert route.resolve_dest("~/Media/100% keep", mtime) == Path("~/Media/100% keep").expanduser()
+    assert route.has_strftime_token("~/x/%Y") is True
+    assert route.has_strftime_token("~/100% done") is False
+
+
+def test_move_no_clobber_renames_instead_of_overwriting(tmp_path):
+    src = tmp_path / "src/a.png"
+    src.parent.mkdir()
+    src.write_text("new")
+    dest_dir = tmp_path / "dest"
+    dest_dir.mkdir()
+    (dest_dir / "a.png").write_text("existing")
+
+    used = route.move_no_clobber(src, dest_dir / "a.png")
+
+    assert used == dest_dir / "a -2.png"
+    assert (dest_dir / "a.png").read_text() == "existing"
+    assert used.read_text() == "new"
+    assert not src.exists()
+
+
+def test_move_no_clobber_creates_parents_and_removes_source(tmp_path):
+    src = tmp_path / "a.png"
+    src.write_text("new")
+
+    used = route.move_no_clobber(src, tmp_path / "deep/er/a.png")
+
+    assert used.read_text() == "new"
+    assert not src.exists()
+
+
+def test_move_no_clobber_raises_when_source_vanished(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        route.move_no_clobber(tmp_path / "gone.png", tmp_path / "dest/gone.png")
+    assert not (tmp_path / "dest/gone.png").exists()
+
+
+def test_apply_action_reports_the_path_actually_used(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    f = make_file(tmp_path / "Downloads" / "a.png")
+    (tmp_path / "Media/Images").mkdir(parents=True)
+    (tmp_path / "Media/Images/a.png").write_text("existing")
+    log = tmp_path / "state" / "actions.log"
+
+    done = route.apply_action(
+        route.Action(src=f, dst=tmp_path / "Media/Images" / "a.png"), False, log
+    )
+
+    assert done.dst == tmp_path / "Media/Images/a -2.png"
+    assert f"-> {tmp_path}/Media/Images/a -2.png" in log.read_text()
+    assert (tmp_path / "Media/Images/a.png").read_text() == "existing"
+
+
 def test_dedupe_inserts_counter(tmp_path):
     (tmp_path / "a.png").write_text("x")
     assert route.dedupe(tmp_path / "b.png") == tmp_path / "b.png"
@@ -250,6 +305,199 @@ def test_process_dir_routes_and_is_idempotent(tmp_path, make_file, monkeypatch):
     assert log.read_text().count("\n") == lines_after_first
 
 
+def test_process_dir_survives_a_file_that_vanishes(tmp_path, make_file, monkeypatch):
+    """I2: one failing file must not abort the rest of the pass."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    make_file(tmp_path / "Downloads" / "a.png")
+    make_file(tmp_path / "Downloads" / "b.png")
+    make_file(tmp_path / "Downloads" / "c.png")
+    rules_file = tmp_path / "rules.toml"
+    _write_rules(rules_file, tmp_path)
+    rules = route.load_rules(rules_file)
+    log = tmp_path / "state/actions.log"
+
+    real_move = route.move_no_clobber
+
+    def flaky(src, dst):
+        if src.name == "b.png":
+            raise FileNotFoundError(2, "No such file or directory", str(src))
+        return real_move(src, dst)
+
+    monkeypatch.setattr(route, "move_no_clobber", flaky)
+
+    done = route.process_dir(tmp_path / "Downloads", rules, time.time(), False, log)
+
+    assert [a.src.name for a in done] == ["a.png", "c.png"]
+    assert (tmp_path / "Media/Images/a.png").exists()
+    assert (tmp_path / "Media/Images/c.png").exists()
+    error_lines = [ln for ln in log.read_text().splitlines() if "  ERROR  " in ln]
+    assert len(error_lines) == 1
+    assert error_lines[0].endswith(f"{tmp_path}/Downloads/b.png -> {tmp_path}/Media/Images/b.png")
+
+
+def test_process_dir_survives_an_unwritable_destination(tmp_path, make_file, monkeypatch):
+    """I2: a PermissionError on one file must not abort the pass either."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    make_file(tmp_path / "Downloads" / "a.png")
+    make_file(tmp_path / "Downloads" / "b.pdf")
+    rules_file = tmp_path / "rules.toml"
+    _write_rules(rules_file, tmp_path)
+    rules = route.load_rules(rules_file)
+    log = tmp_path / "state/actions.log"
+    locked = tmp_path / "Media/Images"
+    locked.mkdir(parents=True)
+    locked.chmod(0o500)
+    try:
+        done = route.process_dir(tmp_path / "Downloads", rules, time.time(), False, log)
+    finally:
+        locked.chmod(0o700)
+
+    assert [a.src.name for a in done] == ["b.pdf"]
+    assert (tmp_path / "Documents/Inbox/b.pdf").exists()
+    assert (tmp_path / "Downloads/a.png").read_text() == "x"  # untouched, not lost
+    assert "  ERROR  " in log.read_text()
+
+
+def test_process_dir_error_line_names_the_offending_destination(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    make_file(tmp_path / "Downloads" / "a.png")
+    rules_file = tmp_path / "rules.toml"
+    rules_file.write_text(
+        f"""
+[[rule]]
+source = "{tmp_path}/Downloads"
+ext = ["png"]
+action = "move"
+dest = "/tmp/escape"
+"""
+    )
+    rules = route.load_rules(rules_file)
+    log = tmp_path / "state/actions.log"
+
+    assert route.process_dir(tmp_path / "Downloads", rules, time.time(), False, log) == []
+
+    line = log.read_text().splitlines()[-1]
+    assert line.split("  ")[1] == "ERROR"
+    assert line.endswith(f"{tmp_path}/Downloads/a.png -> /tmp/escape")
+    assert (tmp_path / "Downloads/a.png").exists()
+
+
+def test_dry_run_does_not_log_outside_home_errors(tmp_path, make_file, monkeypatch):
+    """Minor: the preview must stay side-effect free and not grow the log."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    make_file(tmp_path / "Downloads" / "a.png")
+    rules_file = tmp_path / "rules.toml"
+    rules_file.write_text(
+        f"""
+[[rule]]
+source = "{tmp_path}/Downloads"
+ext = ["png"]
+action = "move"
+dest = "/tmp/escape"
+"""
+    )
+    rules = route.load_rules(rules_file)
+    log = tmp_path / "state/actions.log"
+
+    route.process_dir(tmp_path / "Downloads", rules, time.time(), True, log)
+
+    assert not log.exists()
+
+
+def test_process_dir_ignores_rules_for_other_directories(tmp_path, make_file, monkeypatch):
+    """I8: a match-everything ~/Desktop rule must not sweep ~/Downloads."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    make_file(tmp_path / "Downloads" / "a.png")
+    make_file(tmp_path / "Downloads" / "unmatched.iso")
+    make_file(tmp_path / "Desktop" / "d.iso")
+    rules_file = tmp_path / "rules.toml"
+    rules_file.write_text(
+        f"""
+[[rule]]
+source = "{tmp_path}/Downloads"
+ext = ["png"]
+action = "move"
+dest = "{tmp_path}/Media/Images"
+
+[[rule]]
+source = "{tmp_path}/Desktop"
+action = "move"
+dest = "{tmp_path}/Inbox"
+"""
+    )
+    rules = route.load_rules(rules_file)
+    log = tmp_path / "state/actions.log"
+
+    route.process_dir(tmp_path / "Downloads", rules, time.time(), False, log)
+
+    assert (tmp_path / "Media/Images/a.png").exists()
+    assert (tmp_path / "Downloads/unmatched.iso").exists()
+    assert not (tmp_path / "Inbox").exists()
+
+    route.process_dir(tmp_path / "Desktop", rules, time.time(), False, log)
+    assert (tmp_path / "Inbox/d.iso").exists()
+
+
+def test_cycle_warnings_flags_loops_but_not_chains(tmp_path):
+    def rules_from(text):
+        p = tmp_path / "r.toml"
+        p.write_text(text)
+        return route.load_rules(p)
+
+    chain = rules_from(
+        """
+[[rule]]
+source = "~/Desktop"
+action = "move"
+dest = "~/Inbox"
+
+[[rule]]
+source = "~/Inbox"
+ext = ["pdf"]
+action = "move"
+dest = "~/Documents/Inbox"
+"""
+    )
+    assert route.cycle_warnings(chain) == []
+
+    loop = rules_from(
+        """
+[[rule]]
+source = "~/Desktop"
+action = "move"
+dest = "~/Inbox"
+
+[[rule]]
+source = "~/Inbox"
+ext = ["pdf"]
+action = "move"
+dest = "~/Desktop"
+"""
+    )
+    warnings = route.cycle_warnings(loop)
+    assert len(warnings) == 1
+    assert "cycle" in warnings[0]
+    assert str(Path("~/Desktop").expanduser()) in warnings[0]
+
+
+def test_default_rules_have_no_cycle_warning(tmp_path):
+    src = Path(__file__).resolve().parent.parent / "rules.default.toml"
+    patched = tmp_path / "rules.toml"
+    patched.write_text(src.read_text().replace("@@SCREENSHOT_DIR@@", "~/Desktop"))
+
+    assert route.cycle_warnings(route.load_rules(patched)) == []
+
+
+def test_main_reports_missing_rules_file(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    rc = route.main(["--rules", str(tmp_path / "nope.toml"), "--log", str(tmp_path / "l.log")])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "rules file not found" in err and "install.sh" in err
+
+
 def test_main_dry_run_moves_nothing(tmp_path, make_file, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
     make_file(tmp_path / "Downloads" / "a.png")
@@ -278,3 +526,41 @@ def test_main_defaults_to_rule_sources(tmp_path, make_file, monkeypatch):
 
     assert rc == 0
     assert (tmp_path / "Media/Images/a.png").exists()
+
+
+def _default_rules(tmp_path, screenshot_dir):
+    src = Path(__file__).resolve().parent.parent / "rules.default.toml"
+    patched = tmp_path / "rules.toml"
+    patched.write_text(src.read_text().replace("@@SCREENSHOT_DIR@@", str(screenshot_dir)))
+    return route.load_rules(patched)
+
+
+def test_default_table_routes_end_to_end(tmp_path, make_file, monkeypatch):
+    """I8: the shipped rules, traced with real files, land where the README says."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    shots = tmp_path / "Pictures/Screenshots"
+    rules = _default_rules(tmp_path, shots)
+    log = tmp_path / "state/actions.log"
+    now = time.time()
+
+    make_file(tmp_path / "Desktop" / "invoice.pdf")
+    make_file(tmp_path / "Downloads" / "notes.md")
+    shot = make_file(shots / "Screenshot 2026-03-09 at 14.05.06.png")
+    mtime = _dt.datetime(2026, 3, 9, 14, 5, 6).timestamp()
+    os.utime(shot, (mtime, mtime))
+
+    for directory in (shots, tmp_path / "Desktop", tmp_path / "Downloads"):
+        route.process_dir(directory, rules, now, False, log)
+    # second hop: ~/Desktop drops into ~/Inbox, which routes on the next pass
+    route.process_dir(tmp_path / "Inbox", rules, now, False, log)
+
+    assert (tmp_path / "Documents/Inbox/invoice.pdf").exists()
+    assert (tmp_path / "Notes/00-Inbox/notes.md").exists()
+    assert (tmp_path / "Media/Screenshots/2026-03/2026-03-09_14-05-06.png").exists()
+    assert not any(p.is_file() for p in (tmp_path / "Desktop").iterdir())
+    assert not any(p.is_file() for p in (tmp_path / "Inbox").iterdir())
+
+    # one line per action, including the intermediate Desktop -> Inbox hop
+    lines = log.read_text().splitlines()
+    assert len(lines) == 4
+    assert all("  MOVE  " in line for line in lines)
