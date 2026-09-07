@@ -296,7 +296,14 @@ def process_dir(
 ) -> list[Action]:
     dir_rules = [r for r in rules if r.source.resolve() == directory.resolve()]
     done: list[Action] = []
-    for child in sorted(directory.iterdir()):
+    try:
+        children = sorted(directory.iterdir())
+    except OSError as exc:
+        # Unreadable or removed between main()'s is_dir() and here: report it
+        # and let the other target directories still be processed.
+        print(f"ERROR  {directory}: {exc}", file=sys.stderr)
+        return done
+    for child in children:
         intended: Path | None = None
         try:
             if not child.is_file():

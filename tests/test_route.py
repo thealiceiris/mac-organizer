@@ -564,3 +564,17 @@ def test_default_table_routes_end_to_end(tmp_path, make_file, monkeypatch):
     lines = log.read_text().splitlines()
     assert len(lines) == 4
     assert all("  MOVE  " in line for line in lines)
+
+
+def test_process_dir_survives_an_unreadable_directory(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    locked = tmp_path / "Downloads"
+    locked.mkdir()
+    locked.chmod(0o000)
+    try:
+        done = route.process_dir(locked, [], time.time(), False, tmp_path / "l.log")
+    finally:
+        locked.chmod(0o700)
+
+    assert done == []
+    assert "ERROR" in capsys.readouterr().err
