@@ -6,6 +6,7 @@ import fnmatch
 import time
 import tomllib
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -76,3 +77,29 @@ def match_rule(path: Path, rules: list[Rule], now: float) -> Rule | None:
         if rule_matches(rule, path, now):
             return None if rule.action == "skip" else rule
     return None
+
+
+def resolve_dest(dest: str, mtime: float) -> Path:
+    expanded = datetime.fromtimestamp(mtime).strftime(dest)
+    return Path(expanded).expanduser()
+
+
+def within_home(path: Path) -> bool:
+    home = Path.home().resolve()
+    resolved = path.resolve()
+    return resolved == home or home in resolved.parents
+
+
+def timestamp_name(mtime: float, suffix: str) -> str:
+    return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d_%H-%M-%S") + suffix
+
+
+def dedupe(path: Path) -> Path:
+    if not path.exists():
+        return path
+    counter = 2
+    while True:
+        candidate = path.with_name(f"{path.stem} -{counter}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1

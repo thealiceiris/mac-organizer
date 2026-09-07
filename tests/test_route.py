@@ -1,3 +1,4 @@
+import datetime as _dt
 import time
 from pathlib import Path
 
@@ -122,3 +123,28 @@ def test_match_rule_first_match_wins_and_skip_shadows(tmp_path, make_file):
         _rule(ext=frozenset({"png"}), dest="~/other"),
     ]
     assert route.match_rule(f, rules2, now).dest == "~/Media/Images"
+
+
+def test_resolve_dest_expands_user_and_strftime():
+    mtime = _dt.datetime(2026, 3, 9, 14, 5, 0).timestamp()
+    out = route.resolve_dest("~/Media/Screenshots/%Y-%m", mtime)
+    assert out == Path("~/Media/Screenshots/2026-03").expanduser()
+
+
+def test_within_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert route.within_home(tmp_path / "Media" / "x") is True
+    assert route.within_home(Path("/etc/passwd")) is False
+
+
+def test_timestamp_name():
+    mtime = _dt.datetime(2026, 3, 9, 14, 5, 6).timestamp()
+    assert route.timestamp_name(mtime, ".png") == "2026-03-09_14-05-06.png"
+
+
+def test_dedupe_inserts_counter(tmp_path):
+    (tmp_path / "a.png").write_text("x")
+    assert route.dedupe(tmp_path / "b.png") == tmp_path / "b.png"
+    assert route.dedupe(tmp_path / "a.png") == tmp_path / "a -2.png"
+    (tmp_path / "a -2.png").write_text("x")
+    assert route.dedupe(tmp_path / "a.png") == tmp_path / "a -3.png"
