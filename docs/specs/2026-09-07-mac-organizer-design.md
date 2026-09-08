@@ -130,9 +130,43 @@ agent only. `StandardOutPath` / `StandardErrorPath` point into
 moves; `route.py` is idempotent (a settled directory produces no actions) so
 this converges without loops.
 
+The screenshot agent is only installed when the screenshot folder is not
+already one of the watched sources. On a stock Mac `com.apple.screencapture
+location` is unset and resolves to `~/Desktop`, so the default install has
+four agents, not five, and no folder is watched twice.
+
+### Concurrency model
+
+Single-run idempotence is **not** sufficient: several agents can invoke
+`route.py` at the same time (a `WatchPaths` agent and the sweep, and the
+router's own moves re-trigger watchers for both the source and the
+destination folder). Concurrent processes are the normal case, so safety is
+enforced at two independent levels:
+
+1. **Atomic move primitive.** `route.move_no_clobber(src, dst)` claims the
+   destination name with `os.link` — atomic, and `FileExistsError` if the
+   name is taken — then unlinks the source. On a cross-device move it claims
+   the name with an `O_EXCL` create before copying. It walks `dst`, `dst -2`,
+   `dst -3`, … until a claim succeeds and returns the path actually used,
+   which is what the action log records. Two routers can therefore never
+   settle on the same destination name: no file is overwritten or lost even
+   if the lock below is bypassed. Existence checks before a move (the old
+   `dedupe`-then-`shutil.move`) are TOCTOU-racy and are used only for the
+   `--dry-run` preview.
+2. **Single-instance lock.** `route.main()` takes a non-blocking exclusive
+   `fcntl.flock` on `~/.local/state/mac-organizer/route.lock` for the whole
+   run. A second concurrent run prints one line and exits 0 — it would be
+   redundant work, and launchd fires again on the next event or sweep.
+
+A failure on one file (vanished between `iterdir()` and the move, locked,
+unwritable destination) is logged as an `ERROR` line and the pass continues:
+the sweep is the safety net and must not be aborted by one bad file.
+
 ### `install.sh`
 
-1. Verify `python3` is on PATH; abort with a message if not.
+1. Verify `python3` is on PATH and is 3.11+ (`tomllib`); abort with a
+   message if not — `/usr/bin/python3` on a stock Mac is 3.9, and baking it
+   into the agents fails silently on every fire.
 2. Create: `~/Inbox`, `~/Media/Images`, `~/Media/Screenshots`,
    `~/Documents/Inbox`, `~/Downloads/Installers`,
    `~/.local/state/mac-organizer/`.
@@ -213,3 +247,11 @@ Templater and QuickAdd for faster capture — left to the user.
   documented in README.
 - Homebrew Python upgrades change the interpreter path baked into plists;
   README notes re-running `install.sh` after a major Python upgrade.
+- The watched folder set is fixed at install time (`setup.WATCHED_SOURCES`
+  plus the screenshot folder), so adding a rule with a *new* `source` folder
+  requires re-running `install.sh`. Deriving the watch set from `rules.toml`
+  is a separate design change; the README documents the current behaviour.
+- Rules whose destinations chain back onto an earlier source form a routing
+  cycle. `route.main()` warns on stderr (naming the hops) but still runs;
+  plain chains such as `~/Desktop` → `~/Inbox` → `~/Documents/Inbox` are
+  normal and are not reported.
