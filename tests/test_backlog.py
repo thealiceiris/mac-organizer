@@ -629,3 +629,57 @@ def test_plan_and_apply_never_hash_big_unrelated_sibling_folders(home, make_file
 
     assert (home / "Documents/Development/proj/src/a.py").exists()
     assert not any("big" in str(p) for p in hashed)
+
+
+def _live_sweep(home, factory):
+    from batch import NullNotifier
+    argv = ["--rules", str(home / "rules.toml"), "--log", str(home / "actions.log"),
+            "--lock", str(home / "lock")]
+    return route.main(argv, classifier_factory=factory, notifier=NullNotifier())
+
+
+def test_vetoes_of_downloads_items_stick_in_live_sweeps(home, make_file):
+    """I4 / Ruling 23: what the user vetoed is not moved by the next sweep anyway."""
+    make_file(home / "Downloads/a.png", content="a")
+    make_file(home / "Downloads/b.png", content="b")
+    make_file(home / "Downloads/c.png", content="c")
+    make_file(home / "Downloads/notes.pdf", content="n")
+    make_file(home / "Downloads/Keys/k.pem", content="k")
+    make_file(home / "Downloads/Keys/j.pem", content="j")
+    make_file(home / "Documents/Inbox/lecture.pdf", content="l")
+    _project(home, make_file)
+    factory = FakeFactory(lambda name: NLP)
+    report = do_plan(home, factory, "Documents/Inbox", "Downloads")
+    vetoed = {"a.png", "notes.pdf", "k.pem", "src", "lecture.pdf"}
+
+    def veto(ln):
+        name = Path(ln.split("\t")[1]).name
+        if name == "b.png":
+            return None  # deleted
+        return "#" + ln if name in vetoed else ln
+
+    rewrite(report, veto)
+    do_apply(home, report)
+    assert (home / "Media/Images/c.png").exists()
+    assert (home / "Documents/Keys/j.pem").exists()
+
+    _live_sweep(home, FakeFactory(lambda s: "Development"))
+
+    for kept in ("a.png", "b.png", "notes.pdf", "Keys/k.pem", "src/index.ts"):
+        assert (home / "Downloads" / kept).exists(), kept
+    assert (home / "Downloads/Keys").is_dir()  # the leftover folder holding a vetoed item
+    assert (home / "Documents/Inbox/lecture.pdf").exists()
+
+    # once an item changes, it is sorted normally again
+    later = time.time() - 600
+    os.utime(home / "Downloads/a.png", (later, later))
+    _live_sweep(home, FakeFactory(lambda s: "Development"))
+    assert (home / "Media/Images/a.png").exists()
+    assert (home / "Downloads/b.png").exists()
+
+
+def test_report_header_says_vetoes_are_remembered(home, make_file):
+    make_file(home / "Downloads/a.png")
+    report = do_plan(home, FakeFactory(), "Downloads")
+    header = "\n".join(ln for ln in report.read_text().splitlines() if ln.startswith("#"))
+    assert "remembered" in header and "until they change" in header

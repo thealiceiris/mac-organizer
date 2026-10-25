@@ -295,6 +295,8 @@ def _write_report(state: Path, now: float, lines: list[Line], notes: list[str],
         f" ({len(lines)} lines)",
         f"Leftover folders in ~/Downloads ({', '.join(LEFTOVER_DIRS)}) are removed on apply"
         " only if they end up empty.",
+        "Vetoed items in ~/Downloads are remembered on apply: the regular sorting leaves"
+        " them alone until they change.",
     ]
     if outage:
         header.append("WARNING: AI sorting was unavailable while planning: unsure items fell back"
@@ -304,7 +306,54 @@ def _write_report(state: Path, now: float, lines: list[Line], notes: list[str],
     with fh:
         fh.write("".join(f"# {h}\n" for h in header))
         fh.write("".join(ln.tsv() + "\n" for ln in lines))
+    # what was planned, so apply can tell which lines the user deleted (vetoed)
+    _planned_copy(path).write_text("".join(ln.tsv() + "\n" for ln in lines), encoding="utf-8")
     return path
+
+
+def _planned_copy(report: Path) -> Path:
+    return Path(report).with_name(Path(report).name + ".planned")
+
+
+def _parse_line(raw: str) -> Line | None:
+    f = raw.split("\t")
+    if len(f) == 4:
+        f.append("")
+    if len(f) != 5 or f[0] not in ACTIONS or not f[1].startswith("/") \
+            or not f[2].startswith("/"):
+        return None
+    return Line(f[0], Path(f[1]), Path(f[2]), f[3], f[4])
+
+
+def vetoed_lines(report: Path, approved: list[Line]) -> list[Line]:
+    """Planned lines the user vetoed: deleted (per the planned copy) or prefixed with #."""
+    keep = {(ln.action, ln.src) for ln in approved}
+    found: list[Line] = []
+    try:
+        planned = _planned_copy(report).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        planned = []
+    commented = [raw.lstrip()[1:].lstrip(" ") for raw in
+                 Path(report).read_text(encoding="utf-8").splitlines()
+                 if raw.lstrip().startswith("#")]
+    for raw in planned + commented:
+        ln = _parse_line(raw.removesuffix("\r"))
+        if ln is not None and (ln.action, ln.src) not in keep:
+            found.append(ln)
+    return found
+
+
+def _remember_vetoes(report: Path, approved: list[Line], state: Path) -> None:
+    """Vetoed ~/Downloads items (and the leftover folders holding one) stay put in live sweeps."""
+    downloads = _downloads()
+    paths: set[Path] = set()
+    for ln in vetoed_lines(report, approved):
+        if ln.src.parent == downloads:
+            paths.add(ln.src)
+        elif ln.src.parent.parent == downloads and ln.src.parent.name in LEFTOVER_DIRS:
+            paths.update({ln.src, ln.src.parent})
+    if paths:
+        memory.KeepList(state).add(sorted(p for p in paths if os.path.lexists(p)))
 
 
 PLANNED_AT = "# planned-at: "
@@ -499,6 +548,10 @@ def apply(report: Path, log_path: Path, config=None) -> list[Action]:
     for d in sorted({ln.src.parent for ln in lines}):
         if d.name in LEFTOVER_DIRS and d.parent.resolve() == _downloads().resolve():
             _remove_if_empty(d)
+    try:
+        _remember_vetoes(report, lines, state)  # after the moves: folders' final mtimes
+    except Exception as exc:  # noqa: BLE001 - bookkeeping never undoes the apply
+        print(f"ERROR  remembering vetoed lines: {exc!r}", file=sys.stderr)
     print("Backlog applied: " + ", ".join(
         f"{tally[k]} {label}" for k, label in [
             ("moved", "moved"), ("grouped", "grouped"), ("trashed", "to Trash"),

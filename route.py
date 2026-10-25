@@ -707,7 +707,10 @@ def process_dir(
     dry_run: bool,
     log_path: Path,
     smart: SmartRouter | None = None,
+    keep: memory.KeepList | None = None,
 ) -> list[Action]:
+    """Route every item in ``directory``. Items on ``keep`` (vetoed in a backlog
+    report and unchanged since) are left alone."""
     config = Config(rules=rules, smart=smart.settings if smart is not None else None)
     done: list[Action] = []
     try:
@@ -721,6 +724,8 @@ def process_dir(
         intended: Path | None = None
         rule: Rule | None = None
         try:
+            if keep is not None and keep.holds(child):
+                continue
             line = plan_item(child, config, smart, now, source=directory,
                              on_error=lambda exc: _item_error(child, exc, dry_run, log_path))
             if line is None:
@@ -866,6 +871,7 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
 
         targets = args.paths or sources(rules)
         now = time.time()
+        keep = memory.KeepList(default_state_dir())  # read only here
         router = None
         if not args.dry_run:
             # A dry run never starts the model, writes state or notifies.
@@ -881,7 +887,8 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
             for target in targets:
                 directory = target.expanduser()
                 if directory.is_dir():
-                    process_dir(directory, rules, now, args.dry_run, log_path, smart=router)
+                    process_dir(directory, rules, now, args.dry_run, log_path, smart=router,
+                                keep=keep)
         finally:
             if router is not None:
                 router.close()  # the model is never left running

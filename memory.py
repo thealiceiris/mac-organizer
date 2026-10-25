@@ -22,6 +22,7 @@ PLACEMENTS = "placements.jsonl"
 CORRECTIONS = "corrections.jsonl"
 VERDICTS = "verdicts.jsonl"
 FAILURES = "failures.jsonl"
+KEEP = "keep.jsonl"
 MAX_FAILURES = 3
 
 
@@ -267,5 +268,49 @@ class FailureCounter:
             self._save()
 
     def _save(self) -> None:
+        with _locked(self.file):
+            _rewrite(self.file, list(self.rows.values()))
+
+
+class KeepList:
+    """Items the user vetoed in a backlog report, keyed by (path, size, mtime).
+
+    Live routing leaves such an item alone while it is unchanged; once it
+    changes (or is gone) the entry no longer applies and is dropped on the
+    next ``add``.
+    """
+
+    def __init__(self, state: Path):
+        self.file = Path(state) / KEEP
+        self.rows: dict[str, dict] = {}
+        for r in _read(self.file):
+            if isinstance(r.get("path"), str):
+                self.rows[r["path"]] = r
+
+    @staticmethod
+    def _stat(path: Path):
+        st = os.stat(path)
+        return st.st_size, st.st_mtime
+
+    def holds(self, path: Path) -> bool:
+        r = self.rows.get(str(path))
+        if r is None:
+            return False
+        try:
+            return [r.get("size"), r.get("mtime")] == list(self._stat(path))
+        except OSError:
+            return False
+
+    def add(self, paths) -> None:
+        for p in paths:
+            try:
+                size, mtime = self._stat(p)
+            except OSError:
+                continue
+            self.rows[str(p)] = {"path": str(p), "size": size, "mtime": mtime,
+                                 "at": time.time()}
+        stale = [k for k in self.rows if not self.holds(Path(k))]
+        for k in stale:
+            del self.rows[k]
         with _locked(self.file):
             _rewrite(self.file, list(self.rows.values()))
