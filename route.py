@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import dedupe as dupes
 import fsops
 from fsops import candidate_names, move_no_clobber  # noqa: F401  (re-exported)
 
@@ -265,6 +266,7 @@ class Action:
     src: Path
     dst: Path
     verb: str = "MOVE"
+    duplicate: bool = False
 
 
 class DestOutsideHome(ValueError):
@@ -300,7 +302,22 @@ def _log(log_path: Path, verb: str, src: Path, dst: Path) -> None:
 
 
 def apply_action(action: Action, dry_run: bool, log_path: Path) -> Action:
-    """Perform ``action``. Returns it with ``dst`` set to the path really used."""
+    """Perform ``action``. Returns it with ``dst`` set to the path really used.
+
+    A move whose source is byte-identical to an item already in the destination
+    folder is not moved: the source goes to the Trash and ``DUPLICATE`` is logged
+    with the existing item as ``dst`` (``Action.duplicate`` is set).
+    """
+    if action.verb != "TRASH":
+        existing = dupes.find_identical(action.src, action.dst.parent)
+        if existing is not None:
+            if dry_run:
+                _log(log_path, "DUPLICATE", action.src, existing)
+                print(f"DUPLICATE  {action.src} -> {existing}")
+            else:
+                fsops.trash(action.src)
+                _log(log_path, "DUPLICATE", action.src, existing)
+            return Action(src=action.src, dst=existing, verb=action.verb, duplicate=True)
     if dry_run:
         preview = dedupe(action.dst)
         _log(log_path, "DRYRUN", action.src, preview)

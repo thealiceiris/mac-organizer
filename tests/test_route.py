@@ -308,9 +308,10 @@ def test_process_dir_routes_and_is_idempotent(tmp_path, make_file, monkeypatch):
 def test_process_dir_survives_a_file_that_vanishes(tmp_path, make_file, monkeypatch):
     """I2: one failing file must not abort the rest of the pass."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    make_file(tmp_path / "Downloads" / "a.png")
-    make_file(tmp_path / "Downloads" / "b.png")
-    make_file(tmp_path / "Downloads" / "c.png")
+    # distinct bytes: identical files would be (correctly) treated as duplicates
+    make_file(tmp_path / "Downloads" / "a.png", content="a")
+    make_file(tmp_path / "Downloads" / "b.png", content="b")
+    make_file(tmp_path / "Downloads" / "c.png", content="c")
     rules_file = tmp_path / "rules.toml"
     _write_rules(rules_file, tmp_path)
     rules = route.load_rules(rules_file)
@@ -868,3 +869,85 @@ dest = "{tmp_path}/Media/Isos"
     ])
     assert rc == 0
     assert (tmp_path / "Media/Isos/a.iso").exists()
+
+
+def test_identical_file_goes_to_trash_not_dash2(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    dest = tmp_path / "Documents"
+    make_file(dest / "cv.pdf", content="same")
+    f = make_file(tmp_path / "Downloads" / "cv (1).pdf", content="same")
+    log = tmp_path / "state" / "actions.log"
+
+    done = route.apply_action(route.Action(src=f, dst=dest / "cv (1).pdf"), False, log)
+
+    assert done.duplicate is True
+    assert done.dst == dest / "cv.pdf"
+    assert not f.exists()
+    assert (tmp_path / ".Trash" / "cv (1).pdf").read_text() == "same"
+    assert sorted(p.name for p in dest.iterdir()) == ["cv.pdf"]
+    assert f"  DUPLICATE  {f} -> {dest / 'cv.pdf'}" in log.read_text()
+
+
+def test_same_name_different_bytes_gets_dash2(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    dest = tmp_path / "Documents"
+    make_file(dest / "cv.pdf", content="old")
+    f = make_file(tmp_path / "Downloads" / "cv.pdf", content="new")
+
+    done = route.apply_action(
+        route.Action(src=f, dst=dest / "cv.pdf"), False, tmp_path / "l.log"
+    )
+
+    assert done.duplicate is False
+    assert done.dst == dest / "cv -2.pdf"
+    assert (dest / "cv.pdf").read_text() == "old"
+
+
+def test_identical_dir_detected_ignoring_ds_store(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    dest = tmp_path / "Development"
+    make_file(dest / "proj" / "a.txt", content="a")
+    src = tmp_path / "Downloads" / "proj copy"
+    make_file(src / "a.txt", content="a")
+    (src / ".DS_Store").write_bytes(b"junk")
+
+    done = route.apply_action(
+        route.Action(src=src, dst=dest / "proj copy"), False, tmp_path / "l.log"
+    )
+
+    assert done.duplicate is True
+    assert done.dst == dest / "proj"
+    assert not src.exists()
+    assert (tmp_path / ".Trash" / "proj copy").is_dir()
+    assert sorted(p.name for p in dest.iterdir()) == ["proj"]
+
+
+def test_dry_run_reports_duplicate_without_moving(tmp_path, make_file, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    dest = tmp_path / "Documents"
+    make_file(dest / "cv.pdf", content="same")
+    f = make_file(tmp_path / "Downloads" / "cv (1).pdf", content="same")
+    log = tmp_path / "state" / "actions.log"
+
+    done = route.apply_action(route.Action(src=f, dst=dest / "cv (1).pdf"), True, log)
+
+    assert done.duplicate is True
+    assert f.exists()
+    assert not (tmp_path / ".Trash").exists()
+    assert "DUPLICATE" in capsys.readouterr().out
+    assert "DUPLICATE" in log.read_text()
+
+
+def test_trash_action_skips_duplicate_check(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    make_file(tmp_path / ".Trash" / "a.txt", content="same")
+    f = make_file(tmp_path / "Downloads" / "a.txt", content="same")
+
+    done = route.apply_action(
+        route.Action(src=f, dst=tmp_path / ".Trash" / "a.txt", verb="TRASH"),
+        False,
+        tmp_path / "l.log",
+    )
+
+    assert done.duplicate is False
+    assert done.verb == "TRASH"
