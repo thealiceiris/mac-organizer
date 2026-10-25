@@ -16,6 +16,7 @@ REPO_FILES = [
     "uninstall.sh",
     "setup.py",
     "route.py",
+    "fsops.py",
     "plist.py",
     "rules.default.toml",
     "rules.local.default.toml",

@@ -554,15 +554,16 @@ def test_default_table_routes_end_to_end(tmp_path, make_file, monkeypatch):
     # second hop: ~/Desktop drops into ~/Inbox, which routes on the next pass
     route.process_dir(tmp_path / "Inbox", rules, now, False, log)
 
-    assert (tmp_path / "Documents/Inbox/invoice.pdf").exists()
+    # pdfs are "smart" items: left in place until the smart sort lands (Task 7)
+    assert (tmp_path / "Inbox/invoice.pdf").exists()
     assert (tmp_path / "Notes/00-Inbox/notes.md").exists()
     assert (tmp_path / "Media/Screenshots/2026-03/2026-03-09_14-05-06.png").exists()
     assert not any(p.is_file() for p in (tmp_path / "Desktop").iterdir())
-    assert not any(p.is_file() for p in (tmp_path / "Inbox").iterdir())
+    assert [p.name for p in (tmp_path / "Inbox").iterdir()] == ["invoice.pdf"]
 
     # one line per action, including the intermediate Desktop -> Inbox hop
     lines = log.read_text().splitlines()
-    assert len(lines) == 4
+    assert len(lines) == 3  # the pdf makes no second hop until smart sorting lands
     assert all("  MOVE  " in line for line in lines)
 
 
@@ -701,3 +702,169 @@ def test_rule_kind_filters_items(tmp_path):
     file_rule = route.Rule(source=tmp_path, action="move", ext=frozenset({"app"}))
     assert route.rule_matches(dir_rule, d, now) and not route.rule_matches(dir_rule, f, now)
     assert route.rule_matches(file_rule, f, now) and not route.rule_matches(file_rule, d, now)
+
+
+# --- Task 2: directory items, trash, no-clobber dir moves -------------------
+
+def _mkdir(path, age=3600):
+    path.mkdir(parents=True, exist_ok=True)
+    stamp = time.time() - age
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def _dir_rules(tmp_path, body):
+    f = tmp_path / "rules.toml"
+    f.write_text(body)
+    return route.load_rules(f)
+
+
+def test_dir_not_settled_when_child_recent(tmp_path, make_file):
+    d = _mkdir(tmp_path / "proj")
+    child = make_file(d / "f.txt", age_seconds=10)
+    os.utime(d, (time.time() - 3600,) * 2)
+    now = time.time()
+    assert route.dir_is_settled(d, now) is False
+    old = now - 3600
+    os.utime(child, (old, old))
+    os.utime(d, (old, old))
+    assert route.dir_is_settled(d, now) is True
+
+
+def test_process_dir_ignores_dirs_without_dir_rule(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rules = _dir_rules(tmp_path, f"""
+[[rule]]
+source = "{tmp_path}/Desktop"
+action = "move"
+dest = "{tmp_path}/Inbox"
+""")
+    _mkdir(tmp_path / "Desktop" / "sub")
+    make_file(tmp_path / "Desktop" / "a.txt")
+    route.process_dir(tmp_path / "Desktop", rules, time.time(), False, tmp_path / "log")
+    assert (tmp_path / "Desktop" / "sub").is_dir()
+    assert (tmp_path / "Inbox" / "a.txt").exists()
+
+
+def test_process_dir_skips_own_dest_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rules = _dir_rules(tmp_path, f"""
+[[rule]]
+source = "{tmp_path}/Downloads"
+ext = ["dmg"]
+action = "move"
+dest = "{tmp_path}/Downloads/Installers"
+
+[[rule]]
+source = "{tmp_path}/Downloads"
+kind = "dir"
+action = "move"
+dest = "{tmp_path}/Elsewhere"
+""")
+    _mkdir(tmp_path / "Downloads" / "Installers")
+    _mkdir(tmp_path / "Downloads" / "other")
+    route.process_dir(tmp_path / "Downloads", rules, time.time(), False, tmp_path / "log")
+    assert (tmp_path / "Downloads" / "Installers").is_dir()
+    assert (tmp_path / "Elsewhere" / "other").is_dir()
+
+
+def test_process_dir_moves_app_bundle_to_installers(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rules = _dir_rules(tmp_path, f"""
+[[rule]]
+source = "{tmp_path}/Desktop"
+kind = "dir"
+ext = ["app"]
+action = "move"
+dest = "{tmp_path}/Downloads/Installers"
+""")
+    _mkdir(tmp_path / "Desktop" / "Foo.app")
+    done = route.process_dir(tmp_path / "Desktop", rules, time.time(), False, tmp_path / "log")
+    assert (tmp_path / "Downloads/Installers/Foo.app").is_dir()
+    assert len(done) == 1
+
+
+def test_process_dir_skips_unsettled_dir(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rules = _dir_rules(tmp_path, f"""
+[[rule]]
+source = "{tmp_path}/Downloads"
+kind = "dir"
+action = "move"
+dest = "{tmp_path}/Elsewhere"
+""")
+    d = _mkdir(tmp_path / "Downloads" / "busy")
+    make_file(d / "f", age_seconds=5)
+    os.utime(d, (time.time() - 3600,) * 2)
+    route.process_dir(tmp_path / "Downloads", rules, time.time(), False, tmp_path / "log")
+    assert d.is_dir()
+
+
+def test_trash_action_logs_TRASH(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rules = _dir_rules(tmp_path, f"""
+[[rule]]
+source = "{tmp_path}/Downloads"
+ext = ["ics"]
+action = "trash"
+""")
+    make_file(tmp_path / "Downloads" / "a.ics")
+    log = tmp_path / "log"
+    done = route.process_dir(tmp_path / "Downloads", rules, time.time(), False, log)
+    assert (tmp_path / ".Trash" / "a.ics").exists()
+    assert not (tmp_path / "Downloads" / "a.ics").exists()
+    assert len(done) == 1
+    assert "  TRASH  " in log.read_text()
+
+
+def test_smart_rule_leaves_item_in_place(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rules = _dir_rules(tmp_path, f"""
+[[rule]]
+source = "{tmp_path}/Downloads"
+ext = ["pdf"]
+action = "smart"
+dest = ""
+""")
+    make_file(tmp_path / "Downloads" / "a.pdf")
+    done = route.process_dir(tmp_path / "Downloads", rules, time.time(), False, tmp_path / "log")
+    assert (tmp_path / "Downloads" / "a.pdf").exists() and done == []
+    assert not (tmp_path / "log").exists()
+
+
+def test_own_dest_dirs_and_cycle_warnings_ignore_empty_dest(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    rules = [
+        route.Rule(source=tmp_path / "Downloads", action="smart", dest=""),
+        route.Rule(source=tmp_path / "Downloads", action="move", dest=f"{tmp_path}/Media/%Y"),
+        route.Rule(source=tmp_path, action="move", dest=f"{tmp_path}/Downloads"),
+    ]
+    assert route.own_dest_dirs(rules) == {tmp_path / "Media", tmp_path / "Downloads"}
+    # source == CWD would make a bogus Path(".") edge look like a cycle
+    assert route.cycle_warnings(rules[:1] + [route.Rule(source=Path("."), action="move", dest="")]) == []
+
+
+def test_main_reads_local_overlay(tmp_path, make_file, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "rules.toml").write_text(f"""
+[[rule]]
+source = "{tmp_path}/Downloads"
+ext = ["png"]
+action = "move"
+dest = "{tmp_path}/Media/Images"
+""")
+    (tmp_path / "rules.local.toml").write_text(f"""
+[[rule]]
+source = "{tmp_path}/Downloads"
+ext = ["iso"]
+action = "move"
+dest = "{tmp_path}/Media/Isos"
+""")
+    make_file(tmp_path / "Downloads" / "a.iso")
+    rc = route.main([
+        "--rules", str(tmp_path / "rules.toml"),
+        "--log", str(tmp_path / "log"), "--lock", str(tmp_path / "lock"),
+    ])
+    assert rc == 0
+    assert (tmp_path / "Media/Isos/a.iso").exists()

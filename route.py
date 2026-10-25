@@ -7,13 +7,15 @@ import fcntl
 import fnmatch
 import os
 import re
-import shutil
 import sys
 import time
 import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+import fsops
+from fsops import candidate_names, move_no_clobber  # noqa: F401  (re-exported)
 
 
 @dataclass(frozen=True)
@@ -114,7 +116,7 @@ def cycle_warnings(rules: list[Rule]) -> list[str]:
     edges: dict[Path, list[tuple[Path, Rule]]] = {}
     known = {r.source for r in rules}
     for rule in rules:
-        if rule.action == "skip":
+        if rule.action == "skip" or not rule.dest:
             continue
         target = dest_root(rule.dest)
         if target in known:
@@ -144,7 +146,18 @@ def cycle_warnings(rules: list[Rule]) -> list[str]:
     return warnings
 
 
+def own_dest_dirs(rules: list[Rule]) -> set[Path]:
+    """Folders some rule routes into; these are never treated as items."""
+    return {
+        dest_root(r.dest).resolve()
+        for r in rules
+        if r.dest and r.action not in ("skip", "trash")
+    }
+
+
 MIN_AGE_SECONDS = 60
+DIR_QUIET_SECONDS = 300
+DIR_WALK_LIMIT = 20_000
 SKIP_SUFFIXES = frozenset({".crdownload", ".part", ".download", ".tmp"})
 
 
@@ -152,11 +165,33 @@ def _age_seconds(path: Path, now: float) -> float:
     return now - path.stat().st_mtime
 
 
+def dir_is_settled(path: Path, now: float, quiet_seconds: int = DIR_QUIET_SECONDS) -> bool:
+    """True if nothing inside ``path`` (nor ``path``) changed in ``quiet_seconds``.
+
+    The walk is capped at 20,000 entries; past that only the directory's own
+    mtime is trusted.
+    """
+    newest = path.stat().st_mtime
+    seen = 0
+    for root, dirs, files in os.walk(path):
+        for name in dirs + files:
+            seen += 1
+            if seen > DIR_WALK_LIMIT:
+                return now - path.stat().st_mtime >= quiet_seconds
+            try:
+                newest = max(newest, os.lstat(os.path.join(root, name)).st_mtime)
+            except OSError:
+                continue  # vanished mid-walk: something is still changing
+    return now - newest >= quiet_seconds
+
+
 def should_skip(path: Path, now: float) -> bool:
     if path.name.startswith("."):
         return True
     if path.suffix.lower() in SKIP_SUFFIXES:
         return True
+    if path.is_dir():
+        return not dir_is_settled(path, now)
     return _age_seconds(path, now) < MIN_AGE_SECONDS
 
 
@@ -214,15 +249,6 @@ def timestamp_name(mtime: float, suffix: str) -> str:
     return datetime.fromtimestamp(mtime).strftime("%Y-%m-%d_%H-%M-%S") + suffix
 
 
-def candidate_names(dst: Path):
-    """``dst``, then ``dst -2``, ``dst -3``, … forever."""
-    yield dst
-    counter = 2
-    while True:
-        yield dst.with_name(f"{dst.stem} -{counter}{dst.suffix}")
-        counter += 1
-
-
 def dedupe(path: Path) -> Path:
     """First free name for ``path``. Advisory only — racy by nature.
 
@@ -234,45 +260,11 @@ def dedupe(path: Path) -> Path:
             return candidate
 
 
-def move_no_clobber(src: Path, dst: Path) -> Path:
-    """Move ``src`` to ``dst``, never overwriting. Returns the path used.
-
-    The destination name is claimed atomically (``os.link``, or an ``O_EXCL``
-    create on the cross-device fallback path), so concurrent routers can never
-    settle on the same name and clobber each other. ``src`` is unlinked only
-    after its content is safely at the claimed name.
-    """
-    for candidate in candidate_names(dst):
-        candidate.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.link(src, candidate)
-        except FileExistsError:
-            continue
-        except FileNotFoundError:
-            raise  # src vanished under us; caller logs and moves on
-        except OSError:
-            # Cross-device (EXDEV) or a filesystem without hard links:
-            # claim the name with an exclusive create, then copy.
-            try:
-                fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            except FileExistsError:
-                continue
-            os.close(fd)
-            try:
-                shutil.copy2(src, candidate)
-            except BaseException:
-                os.unlink(candidate)  # never leave an empty claim behind
-                raise
-            os.unlink(src)
-            return candidate
-        os.unlink(src)
-        return candidate
-
-
 @dataclass(frozen=True)
 class Action:
     src: Path
     dst: Path
+    verb: str = "MOVE"
 
 
 class DestOutsideHome(ValueError):
@@ -285,6 +277,8 @@ class DestOutsideHome(ValueError):
 
 def plan_action(path: Path, rule: Rule, now: float) -> Action | None:
     """The *intended* destination. Collisions are resolved at move time."""
+    if rule.action == "trash":
+        return Action(src=path, dst=Path("~/.Trash").expanduser() / path.name, verb="TRASH")
     mtime = path.stat().st_mtime
     dest_dir = resolve_dest(rule.dest, mtime)
     if not within_home(dest_dir):
@@ -311,10 +305,18 @@ def apply_action(action: Action, dry_run: bool, log_path: Path) -> Action:
         preview = dedupe(action.dst)
         _log(log_path, "DRYRUN", action.src, preview)
         print(f"DRYRUN  {action.src} -> {preview}")
-        return Action(src=action.src, dst=preview)
-    final = move_no_clobber(action.src, action.dst)
-    _log(log_path, "MOVE", action.src, final)
-    return Action(src=action.src, dst=final)
+        return Action(src=action.src, dst=preview, verb=action.verb)
+    if action.verb == "TRASH":
+        final = fsops.trash(action.src)
+    else:
+        # File moves go through this module's move_no_clobber (patchable).
+        is_dir = action.src.is_dir() and not action.src.is_symlink()
+        if is_dir:
+            final = fsops.move_dir_no_clobber(action.src, action.dst)
+        else:
+            final = move_no_clobber(action.src, action.dst)
+    _log(log_path, action.verb, action.src, final)
+    return Action(src=action.src, dst=final, verb=action.verb)
 
 
 def default_log_path() -> Path:
@@ -349,6 +351,8 @@ def process_dir(
     log_path: Path,
 ) -> list[Action]:
     dir_rules = [r for r in rules if r.source.resolve() == directory.resolve()]
+    has_dir_rules = any(r.kind == "dir" for r in dir_rules)
+    skip_dirs = own_dest_dirs(rules)
     done: list[Action] = []
     try:
         children = sorted(directory.iterdir())
@@ -360,13 +364,16 @@ def process_dir(
     for child in children:
         intended: Path | None = None
         try:
-            if not child.is_file():
+            if child.is_dir():
+                if not has_dir_rules or child.resolve() in skip_dirs:
+                    continue
+            elif not child.is_file():
                 continue
             if should_skip(child, now):
                 continue
             rule = match_rule(child, dir_rules, now)
-            if rule is None:
-                continue
+            if rule is None or rule.action == "smart":
+                continue  # smart sorting arrives in a later task
             action = plan_action(child, rule, now)
             if action is None:
                 continue
@@ -414,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         try:
-            rules = load_rules(args.rules)
+            rules = load_config(args.rules, args.rules.parent / "rules.local.toml").rules
         except FileNotFoundError:
             print(
                 f"rules file not found at {args.rules} — run ./install.sh first",
