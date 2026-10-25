@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import dedupe as dupes
+import extract
 import fsops
 from fsops import candidate_names, move_no_clobber  # noqa: F401  (re-exported)
 
@@ -29,7 +30,7 @@ class Rule:
     min_age_seconds: int = 0
     kind: str = "file"  # "file" or "dir"
     name_regex: str | None = None  # case-insensitive search on the item name
-    has_installer: bool | None = None  # archives only; honoured from Task 4
+    has_installer: bool | None = None  # archives only
 
 
 @dataclass(frozen=True)
@@ -209,6 +210,8 @@ def rule_matches(rule: Rule, path: Path, now: float) -> bool:
     if rule.glob and not fnmatch.fnmatch(path.name, rule.glob):
         return False
     if rule.min_age_seconds and _age_seconds(path, now) < rule.min_age_seconds:
+        return False
+    if rule.has_installer is not None and extract.archive_has_installer(path) != rule.has_installer:
         return False
     return True
 

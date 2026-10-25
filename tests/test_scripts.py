@@ -17,6 +17,7 @@ REPO_FILES = [
     "setup.py",
     "route.py",
     "fsops.py",
+    "extract.py",
     "dedupe.py",
     "plist.py",
     "rules.default.toml",

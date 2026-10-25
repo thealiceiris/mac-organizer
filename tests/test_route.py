@@ -951,3 +951,17 @@ def test_trash_action_skips_duplicate_check(tmp_path, make_file, monkeypatch):
 
     assert done.duplicate is False
     assert done.verb == "TRASH"
+
+
+def test_rule_matches_honours_has_installer(tmp_path):
+    import zipfile
+    app = tmp_path / "app.zip"
+    with zipfile.ZipFile(app, "w") as z:
+        z.writestr("Foo.app/Contents/Info.plist", "x")
+    src = tmp_path / "src.zip"
+    with zipfile.ZipFile(src, "w") as z:
+        z.writestr("main.c", "x")
+    yes = route.Rule(source=tmp_path, ext=frozenset({"zip"}), action="move", dest="~/I", has_installer=True)
+    no = route.Rule(source=tmp_path, ext=frozenset({"zip"}), action="move", dest="~/I", has_installer=False)
+    assert route.rule_matches(yes, app, 0) and not route.rule_matches(yes, src, 0)
+    assert route.rule_matches(no, src, 0) and not route.rule_matches(no, app, 0)
