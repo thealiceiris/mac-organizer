@@ -292,12 +292,13 @@ def test_parse_verdict_truncates_long_reason(tmp_path):
 # ---------------------------------------------------------------- server
 
 
-def test_classify_http_error_is_unsure(tmp_path, model, fast):
+def test_classify_http_error_is_an_outage_not_unsure(tmp_path, model, fast):
+    """Fix round 1: a server-side HTTP error must never become a cacheable "unsure"."""
     err = urllib.error.HTTPError("http://127.0.0.1:1/v1/chat/completions", 500, "boom", {}, io.BytesIO(b""))
     fake = FakeUrlopen(chat=err)
     with classify.LlamaServer(model, popen=FakePopen(), urlopen=fake) as srv:
-        v = srv.classify("Name: x.pdf", _cands(tmp_path), [], 0.6)
-    assert v.folder is None
+        with pytest.raises(classify.ServerUnavailable, match="HTTP 500"):
+            srv.classify("Name: x.pdf", _cands(tmp_path), [], 0.6)
 
 
 def test_classify_returns_verdict(tmp_path, model, fast):
@@ -469,7 +470,7 @@ def test_server_terminates_stale_llama_server_from_pidfile(tmp_path, model, fast
     pidfile = tmp_path / "state" / classify.PIDFILE
     pidfile.parent.mkdir()
     pidfile.write_text("999\n")
-    table = FakeProcTable({999: "/opt/homebrew/bin/llama-server -m x.gguf --host 127.0.0.1"})
+    table = FakeProcTable({999: f"/opt/homebrew/bin/llama-server -m {model} --host 127.0.0.1"})
     with _server(model, tmp_path, table):
         assert pidfile.read_text().strip() == "4242"
     assert table.kills == [(999, signal.SIGTERM)]
@@ -479,7 +480,7 @@ def test_server_kills_stale_orphan_that_ignores_term(tmp_path, model, fast):
     pidfile = tmp_path / "state" / classify.PIDFILE
     pidfile.parent.mkdir()
     pidfile.write_text("999")
-    table = FakeProcTable({999: "llama-server -m x"}, ignore_term={999})
+    table = FakeProcTable({999: f"llama-server -m {model}"}, ignore_term={999})
     with _server(model, tmp_path, table):
         pass
     assert table.kills == [(999, signal.SIGTERM), (999, signal.SIGKILL)]
@@ -487,6 +488,7 @@ def test_server_kills_stale_orphan_that_ignores_term(tmp_path, model, fast):
 
 @pytest.mark.parametrize("content,procs", [
     ("999", {999: "/usr/bin/vim notes.txt"}),  # pid reused by something else
+    ("999", {999: "llama-server -m /elsewhere/other.gguf"}),  # someone else's server
     ("999", {}),                               # already dead
     ("garbage", {}),                           # unreadable pidfile
 ])

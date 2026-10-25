@@ -59,3 +59,19 @@ def test_trash_file_and_dir_with_clash(tmp_path):
     assert fsops.trash(f2, trash_dir) == trash_dir / "x -2.txt"
     assert fsops.trash(d, trash_dir) == trash_dir / "folder"
     assert not f1.exists() and not f2.exists() and not d.exists()
+
+
+def test_moves_without_mkdir_never_create_the_parent(tmp_path):
+    """Fix round 1: smart moves never create a destination folder."""
+    f = tmp_path / "a.pdf"
+    f.write_text("x")
+    d = tmp_path / "proj"
+    d.mkdir()
+    with pytest.raises(fsops.DestDirMissing):
+        fsops.move_no_clobber(f, tmp_path / "gone/a.pdf", mkdir=False)
+    with pytest.raises(fsops.DestDirMissing):
+        fsops.move_dir_no_clobber(d, tmp_path / "gone/proj", mkdir=False)
+    assert not (tmp_path / "gone").exists()
+    assert f.exists() and d.is_dir()
+    (tmp_path / "there").mkdir()
+    assert fsops.move_no_clobber(f, tmp_path / "there/a.pdf", mkdir=False) == tmp_path / "there/a.pdf"

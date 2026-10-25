@@ -207,8 +207,9 @@ def test_unsure_zip_stays_and_is_cached(home, make_file):
     assert z.exists()
     assert [r["path"] for r in rows(state(home) / "verdicts.jsonl")] == [str(z)]
     assert len(factory.samples) == 1
-    # a fresh "unsure" that stays put is not worth a summary
-    assert notifier.calls == ["start"]
+    # "Files are being sorted…" is always followed by a summary, even if nothing moved
+    assert notifier.calls == ["start", "summary"]
+    assert [e.kind for e in notifier.batches[0].entries] == ["stay"]
 
 
 def test_cached_unsure_items_do_not_start_server_or_notify(home, make_file):
@@ -219,6 +220,8 @@ def test_cached_unsure_items_do_not_start_server_or_notify(home, make_file):
     old = time.time() - 3600
     os.utime(home / "Downloads/project", (old, old))
     run_main(home, FakeFactory(), FakeNotifier())
+    assert sorted(r["path"] for r in rows(state(home) / "verdicts.jsonl")) == [
+        str(home / "Downloads/project"), str(home / "Downloads/stuff.zip")]
 
     factory, notifier = FakeFactory(), FakeNotifier()
     run_main(home, factory, notifier)
@@ -378,28 +381,51 @@ def test_dry_run_never_starts_model(home, make_file):
     assert factory.made == 0 and notifier.calls == []
 
 
-@pytest.mark.parametrize("enabled,model", [(False, True), (True, False)])
-def test_disabled_or_missing_model_is_permanent_unavailable(home, make_file, enabled, model):
-    if not enabled:
-        (home / "rules.local.toml").write_text(
-            f'[smart_sort]\nenabled = false\nmodel_path = "{home / "model.gguf"}"\n')
-    else:
-        (home / "model.gguf").unlink()
+def test_disabled_smart_sort_is_silent_fallback(home, make_file):
+    """Fix round 1: AI turned off on purpose is not an outage."""
+    (home / "rules.local.toml").write_text(
+        f'[smart_sort]\nenabled = false\nmodel_path = "{home / "model.gguf"}"\n')
     make_file(home / "Downloads/stuff.zip")
     make_file(home / "Downloads/a.pdf")
     factory, notifier = FakeFactory(lambda s, n: NLP), FakeNotifier()
 
+    run_main(home, factory, notifier)
     run_main(home, factory, notifier)
 
     assert factory.made == 0
     assert (home / "Downloads/stuff.zip").exists()
     assert (home / "Documents/Inbox/a.pdf").exists()
     assert rows(state(home) / "verdicts.jsonl") == []
-    assert notifier.calls == ["summary"]  # no "sorting…" start: nothing is started
-    assert notifier.batches[0].ai_unavailable is True
+    assert notifier.calls == ["summary"]  # the Inbox move; never "unavailable"
+    assert notifier.batches[0].ai_unavailable is False
+    assert not (state(home) / "unavailable-notified").exists()
 
 
-def test_permanent_unavailable_notifies_at_most_once_per_day(home, make_file):
+def test_missing_model_falls_back_and_flags_unavailable_once_per_day(home, make_file):
+    (home / "model.gguf").unlink()
+    make_file(home / "Downloads/stuff.zip")
+    make_file(home / "Downloads/a.pdf", content="a")
+    first = FakeNotifier()
+    factory = FakeFactory(lambda s, n: NLP)
+
+    run_main(home, factory, first)
+
+    assert factory.made == 0
+    assert (home / "Downloads/stuff.zip").exists()
+    assert (home / "Documents/Inbox/a.pdf").exists()
+    assert rows(state(home) / "verdicts.jsonl") == []
+    assert first.calls == ["summary"]  # no "sorting…" start: nothing is started
+    assert first.batches[0].ai_unavailable is True
+
+    # same day: another Inbox move is summarised, but the outage is not repeated
+    make_file(home / "Downloads/b.pdf", content="b")
+    second = FakeNotifier()
+    run_main(home, factory, second)
+    assert second.calls == ["summary"]
+    assert second.batches[0].ai_unavailable is False
+
+
+def test_permanent_unavailable_notice_at_most_once_per_day(home, make_file):
     (home / "model.gguf").unlink()
     make_file(home / "Downloads/stuff.zip")
     first, second = FakeNotifier(), FakeNotifier()
@@ -414,6 +440,96 @@ def test_permanent_unavailable_notifies_at_most_once_per_day(home, make_file):
     third = FakeNotifier()
     run_main(home, FakeFactory(), third)
     assert third.calls == ["unavailable"]
+
+
+def test_server_crash_flag_throttled_with_notice(home, make_file):
+    """A crash within a day of the last outage notice still summarises, without the flag."""
+    state(home).mkdir(parents=True)
+    (state(home) / "unavailable-notified").write_text(str(time.time() - 60))
+    make_file(home / "Downloads/a.pdf")
+
+    def answer(sample, n):
+        raise ServerUnavailable("dead")
+
+    notifier = FakeNotifier()
+    run_main(home, FakeFactory(answer), notifier)
+
+    assert (home / "Documents/Inbox/a.pdf").exists()
+    assert notifier.calls == ["start", "summary"]
+    assert notifier.batches[0].ai_unavailable is False
+
+
+def test_candidate_vanishing_after_decision_takes_fallback(home, make_file, monkeypatch):
+    """Fix round 1: the folder disappears between the verdict and the move."""
+    src = make_file(home / "Downloads/cv.pdf")
+    zsrc = make_file(home / "Downloads/cv.zip", content="zip")
+    career = home / "Documents/Career"
+    router = route.SmartRouter(settings(home), state(home), FakeFactory(lambda s, n: "Career"),
+                               FakeNotifier())
+    real_route = router.route
+
+    def route_then_delete(path, rule, now):
+        action = real_route(path, rule, now)
+        if career.exists():
+            shutil.rmtree(career)
+        return action
+
+    monkeypatch.setattr(router, "route", route_then_delete)
+    route_dir(home, router)
+
+    assert not career.exists()
+    assert not src.exists()
+    assert (home / "Documents/Inbox/cv.pdf").exists()
+    assert zsrc.exists()  # no fallback for archives: it stays
+    assert rows(state(home) / "verdicts.jsonl") == []
+    assert rows(state(home) / "placements.jsonl") == []
+    assert sorted(e.kind for e in router.batch.entries) == ["inbox", "stay"]
+
+
+def test_apply_action_no_mkdir_raises_and_leaves_item(home, make_file):
+    src = make_file(home / "Downloads/cv.pdf")
+    action = route.Action(src=src, dst=home / "Documents/Gone/cv.pdf", verb="SMART", no_mkdir=True)
+    with pytest.raises(route.DestDirMissing):
+        route.apply_action(action, False, home / "actions.log")
+    assert src.exists()
+    assert not (home / "Documents/Gone").exists()
+
+
+def test_unexpected_error_for_one_item_is_unsure_uncached_and_run_continues(home, make_file):
+    """Fix round 1: any exception on the smart path is contained to that item."""
+    make_file(home / "Downloads/a-bad.pdf", content="a")
+    make_file(home / "Downloads/b-bad.zip", content="b")
+    make_file(home / "Downloads/c-ngrams.pdf", content="c")
+
+    def answer(sample, n):
+        if "bad" in sample.splitlines()[0]:
+            raise RuntimeError("tokenizer exploded")
+        return NLP
+
+    factory, notifier = FakeFactory(answer), FakeNotifier()
+    assert run_main(home, factory, notifier) == 0
+
+    assert (home / "Documents/Inbox/a-bad.pdf").exists()
+    assert (home / "Downloads/b-bad.zip").exists()
+    assert (home / "Documents" / NLP / "c-ngrams.pdf").exists()
+    assert rows(state(home) / "verdicts.jsonl") == []
+    assert (factory.entered, factory.exited) == (1, 1)  # the server was not given up on
+    log = log_text(home)
+    assert f"  ERROR  {home / 'Downloads/a-bad.pdf'} -> -" in log
+    assert f"  ERROR  {home / 'Downloads/b-bad.zip'} -> -" in log
+    assert notifier.batches[0].ai_unavailable is False
+
+
+def test_detect_corrections_failure_is_logged_and_routing_continues(home, make_file, monkeypatch, capsys):
+    make_file(home / "Downloads/ngrams.pdf")
+
+    def boom(*a, **kw):
+        raise RuntimeError("corrupt state")
+
+    monkeypatch.setattr(route.memory, "detect_corrections", boom)
+    assert run_main(home, FakeFactory(lambda s, n: NLP), FakeNotifier()) == 0
+    assert (home / "Documents" / NLP / "ngrams.pdf").exists()
+    assert "corrupt state" in capsys.readouterr().err
 
 
 def test_sigterm_mid_batch_stops_the_model(home, make_file):
@@ -473,3 +589,32 @@ def test_classify_module_default_factory(home):
     router = route.SmartRouter(settings(home), state(home))
     assert router.factory is classify.LlamaServer
     router.close()  # closing an unstarted router is a no-op
+
+
+def test_sigterm_restore_handles_none_and_sig_dfl():
+    """Fix round 1: a previous handler of None/SIG_DFL is restored, not left as ours."""
+    original = signal.getsignal(signal.SIGTERM)
+    try:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        prev = route._install_sigterm()
+        assert signal.getsignal(signal.SIGTERM) is route._raise_exit
+        route._restore_sigterm(prev)
+        assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+
+        route._install_sigterm()
+        route._restore_sigterm(None)  # handler not installed from Python
+        assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+    finally:
+        signal.signal(signal.SIGTERM, original)
+
+
+def test_sigterm_not_installed_off_main_thread():
+    import threading
+    out = {}
+    t = threading.Thread(target=lambda: out.setdefault("prev", route._install_sigterm()))
+    t.start()
+    t.join()
+    before = signal.getsignal(signal.SIGTERM)
+    route._restore_sigterm(out["prev"])  # the sentinel: a no-op
+    assert out["prev"] is route._SIGTERM_NOT_INSTALLED
+    assert signal.getsignal(signal.SIGTERM) == before

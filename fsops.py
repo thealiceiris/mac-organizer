@@ -12,6 +12,17 @@ from pathlib import Path
 RENAME_EXCL = 0x00000004  # renamex_np flag: fail with EEXIST instead of replacing
 
 
+class DestDirMissing(FileNotFoundError):
+    """A move made with ``mkdir=False`` found no destination folder."""
+
+
+def _parent_ready(candidate: Path, mkdir: bool) -> None:
+    if mkdir:
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+    elif not candidate.parent.is_dir():
+        raise DestDirMissing(errno.ENOENT, "destination folder missing", str(candidate.parent))
+
+
 def candidate_names(dst: Path):
     """``dst``, then ``dst -2``, ``dst -3``, … forever."""
     yield dst
@@ -21,21 +32,26 @@ def candidate_names(dst: Path):
         counter += 1
 
 
-def move_no_clobber(src: Path, dst: Path) -> Path:
+def move_no_clobber(src: Path, dst: Path, mkdir: bool = True) -> Path:
     """Move file ``src`` to ``dst``, never overwriting. Returns the path used.
 
     The destination name is claimed atomically (``os.link``, or an ``O_EXCL``
     create on the cross-device fallback path), so concurrent routers can never
     settle on the same name and clobber each other. ``src`` is unlinked only
-    after its content is safely at the claimed name.
+    after its content is safely at the claimed name. With ``mkdir=False`` a
+    missing destination folder raises :class:`DestDirMissing` instead of
+    being created.
     """
     for candidate in candidate_names(dst):
-        candidate.parent.mkdir(parents=True, exist_ok=True)
+        _parent_ready(candidate, mkdir)
         try:
             os.link(src, candidate)
         except FileExistsError:
             continue
         except FileNotFoundError:
+            if not mkdir and not candidate.parent.is_dir():
+                raise DestDirMissing(errno.ENOENT, "destination folder missing",
+                                     str(candidate.parent)) from None
             raise  # src vanished under us; caller logs and moves on
         except OSError:
             # Cross-device (EXDEV) or a filesystem without hard links:
@@ -73,7 +89,7 @@ def _rename_excl(src: Path, dst: Path) -> None:
         raise OSError(err, os.strerror(err), str(dst))
 
 
-def move_dir_no_clobber(src: Path, dst: Path) -> Path:
+def move_dir_no_clobber(src: Path, dst: Path, mkdir: bool = True) -> Path:
     """Move directory ``src`` to ``dst``, never replacing or merging.
 
     Plain ``rename(2)`` silently replaces an *empty* destination directory, so
@@ -81,12 +97,15 @@ def move_dir_no_clobber(src: Path, dst: Path) -> Path:
     ``OSError`` (EXDEV): everything stays under ``$HOME``.
     """
     for candidate in candidate_names(dst):
-        candidate.parent.mkdir(parents=True, exist_ok=True)
+        _parent_ready(candidate, mkdir)
         try:
             _rename_excl(src, candidate)
         except OSError as exc:
             if exc.errno == errno.EEXIST:
                 continue
+            if exc.errno == errno.ENOENT and not mkdir and not candidate.parent.is_dir():
+                raise DestDirMissing(errno.ENOENT, "destination folder missing",
+                                     str(candidate.parent)) from exc
             raise
         return candidate
 

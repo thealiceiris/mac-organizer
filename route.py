@@ -22,7 +22,7 @@ import extract
 import fsops
 import memory
 from batch import Batch, NullNotifier
-from fsops import candidate_names, move_no_clobber  # noqa: F401  (re-exported)
+from fsops import DestDirMissing, candidate_names, move_no_clobber  # noqa: F401  (re-exported)
 
 
 @dataclass(frozen=True)
@@ -275,6 +275,7 @@ class Action:
     dst: Path
     verb: str = "MOVE"
     duplicate: bool = False
+    no_mkdir: bool = False  # smart moves: a missing folder raises DestDirMissing
 
 
 class DestOutsideHome(ValueError):
@@ -337,7 +338,9 @@ def apply_action(action: Action, dry_run: bool, log_path: Path) -> Action:
         # File moves go through this module's move_no_clobber (patchable).
         is_dir = action.src.is_dir() and not action.src.is_symlink()
         if is_dir:
-            final = fsops.move_dir_no_clobber(action.src, action.dst)
+            final = fsops.move_dir_no_clobber(action.src, action.dst, mkdir=not action.no_mkdir)
+        elif action.no_mkdir:
+            final = move_no_clobber(action.src, action.dst, mkdir=False)
         else:
             final = move_no_clobber(action.src, action.dst)
     _log(log_path, action.verb, action.src, final)
@@ -398,6 +401,9 @@ class SmartRouter:
     A cached "unsure" verdict leaves the item in place without starting the
     model. Once the model is unavailable (disabled, missing, failed to start or
     died mid-run) every later item is treated as unsure and is not cached.
+    Disabled on purpose is not an outage: it is never flagged or notified.
+    An outage is flagged (``batch.ai_unavailable``) and notified at most once a
+    day.
     """
 
     def __init__(self, settings: SmartSettings, state: Path,
@@ -408,8 +414,11 @@ class SmartRouter:
         self.notifier = notifier if notifier is not None else NullNotifier()
         self.batch = Batch()
         model = settings.model_path
-        self.permanent = not settings.enabled or model is None or not model.is_file()
+        self.disabled = not settings.enabled
+        self.permanent = self.disabled or model is None or not model.is_file()
         self._down = self.permanent
+        self.outage = False  # the model was needed but broken this run
+        self._announced = False
         self._server = None
         self._ctx = None
         self._cands = None
@@ -436,17 +445,19 @@ class SmartRouter:
     def _unavailable(self, exc: BaseException) -> None:
         print(f"ERROR  smart sort unavailable: {exc}", file=sys.stderr)
         self._down = True
-        self.batch.ai_unavailable = True
+        self.outage = True
         self.close()
 
     def _ensure_server(self):
         if self._server is None and not self._down:
-            _call(self.notifier, "start")
+            if not self._announced:
+                self._announced = True
+                _call(self.notifier, "start")
             try:
                 ctx = self.factory(self.settings.model_path, state_dir=self.state)
                 self._server = ctx.__enter__()
                 self._ctx = ctx
-            except (classify.ServerUnavailable, OSError) as exc:
+            except Exception as exc:  # noqa: BLE001 - any start failure is an outage
                 self._unavailable(exc)
         return self._server
 
@@ -470,7 +481,8 @@ class SmartRouter:
         if cache.get(*key):
             return None
         if self._down:
-            self.batch.ai_unavailable = True
+            if not self.disabled:
+                self.outage = True
             verdict, sample = None, ""
         else:
             sample = extract.sample(path)
@@ -481,16 +493,24 @@ class SmartRouter:
             # never create a folder: the candidate must still exist right now
             if cand is not None and cand.path.is_dir() and within_home(cand.path):
                 self._picks[path] = _Pick(cand.name, verdict.reason, summary)
-                return Action(src=path, dst=cand.path / path.name, verb="SMART")
-        reason = verdict.reason if verdict is not None else "AI sorting unavailable"
+                return Action(src=path, dst=cand.path / path.name, verb="SMART", no_mkdir=True)
+        if verdict is None:
+            reason = "AI sorting off" if self.disabled else "AI sorting unavailable"
+        else:
+            reason = verdict.reason
+        if not rule.dest and verdict is not None and verdict.folder is None:
+            cache.put_unsure(*key)  # a genuine "unsure": never an outage or a vanished folder
+        return self.fallback(path, rule, reason, summary)
+
+    def fallback(self, path: Path, rule: Rule, reason: str, summary: str = "") -> Action | None:
+        """The rule's fallback move, or leave the item in place. Never caches."""
         if rule.dest:
             dest_dir = resolve_dest(rule.dest, path.stat().st_mtime)
             if not within_home(dest_dir):
                 raise DestOutsideHome(dest_dir)
             self._picks[path] = _Pick(None, reason, summary)
             return Action(src=path, dst=dest_dir / path.name)
-        if verdict is not None:  # a real "unsure", not an outage
-            cache.put_unsure(*key)
+        self._picks.pop(path, None)
         self.batch.add(path, path, None, "stay", reason, smart=True)
         return None
 
@@ -514,10 +534,17 @@ class SmartRouter:
             ctx.__exit__(None, None, None)
 
     def finish(self, now: float) -> None:
-        """End-of-run notification: a summary, or a daily 'AI unavailable' notice."""
-        if self.batch.notable:
+        """End-of-run notification.
+
+        A run that announced "Files are being sorted…" always ends with a
+        summary. An outage is reported (flag in the summary, or a standalone
+        notice) at most once a day.
+        """
+        report_outage = self.outage and self._unavailable_notice_due(now)
+        self.batch.ai_unavailable = report_outage
+        if self.batch.notable or self._announced:
             _call(self.notifier, "summary", self.batch)
-        elif self.batch.ai_unavailable and self._unavailable_notice_due(now):
+        elif report_outage:
             _call(self.notifier, "unavailable")
 
     def _unavailable_notice_due(self, now: float) -> bool:
@@ -557,6 +584,7 @@ def process_dir(
         return done
     for child in children:
         intended: Path | None = None
+        rule: Rule | None = None
         try:
             if child.is_dir():
                 if not has_dir_rules or child.resolve() in skip_dirs:
@@ -571,16 +599,23 @@ def process_dir(
             if rule.action == "smart":
                 # Without a router (dry run, or a caller that predates smart
                 # sorting) smart items are left in place.
-                action = smart.route(child, rule, now) if smart is not None else None
+                if smart is None:
+                    continue
+                result = _smart_item(child, rule, now, dry_run, log_path, smart)
             else:
                 action = plan_action(child, rule, now)
-            if action is None:
+                if action is None:
+                    continue
+                intended = action.dst
+                result = apply_action(action, dry_run, log_path)
+            if result is None:
                 continue
-            intended = action.dst
-            result = apply_action(action, dry_run, log_path)
             done.append(result)
             if smart is not None:
-                smart.record(rule, result, now)
+                try:
+                    smart.record(rule, result, now)
+                except Exception as exc:  # noqa: BLE001 - bookkeeping never undoes a move
+                    print(f"ERROR  recording {child}: {exc!r}", file=sys.stderr)
         except DestOutsideHome as exc:
             # Configuration error: it would repeat on every run, so it is
             # reported once per run to stderr and kept out of the action log
@@ -594,22 +629,65 @@ def process_dir(
             print(f"ERROR  {child}: {exc}", file=sys.stderr)
             if not dry_run:
                 _log(log_path, "ERROR", child, intended or Path("-"))
+        except Exception as exc:  # noqa: BLE001
+            if rule is None or rule.action != "smart":
+                raise
+            _item_error(child, exc, dry_run, log_path)  # left in place, nothing cached
     return done
+
+
+def _item_error(child: Path, exc: BaseException, dry_run: bool, log_path: Path) -> None:
+    print(f"ERROR  {child}: {exc!r}", file=sys.stderr)
+    if not dry_run:
+        _log(log_path, "ERROR", child, Path("-"))
+
+
+def _smart_item(child: Path, rule: Rule, now: float, dry_run: bool, log_path: Path,
+                smart: SmartRouter) -> Action | None:
+    """Route one smart item. A failure while deciding is contained to the item:
+    it is logged and the item is treated as unsure (fallback or stay), uncached."""
+    try:
+        action = smart.route(child, rule, now)
+    except DestOutsideHome:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _item_error(child, exc, dry_run, log_path)
+        action = smart.fallback(child, rule, "error while sorting")
+    if action is None:
+        return None
+    try:
+        return apply_action(action, dry_run, log_path)
+    except DestDirMissing:
+        if not action.no_mkdir:
+            raise
+        # the chosen folder vanished before the move: never recreate it
+        action = smart.fallback(child, rule, "chosen folder no longer exists")
+        return apply_action(action, dry_run, log_path) if action is not None else None
 
 
 def _raise_exit(signum, frame):
     raise SystemExit(128 + signum)
 
 
+_SIGTERM_NOT_INSTALLED = object()
+
+
 def _install_sigterm():
     """launchd stops a job with SIGTERM: turn it into SystemExit so cleanup runs.
 
-    Returns the previous handler, or None when not on the main thread (signal
-    handlers can only be set there).
+    Returns the previous handler, or ``_SIGTERM_NOT_INSTALLED`` when not on the
+    main thread (signal handlers can only be set there).
     """
     if threading.current_thread() is not threading.main_thread():
-        return None
+        return _SIGTERM_NOT_INSTALLED
     return signal.signal(signal.SIGTERM, _raise_exit)
+
+
+def _restore_sigterm(previous) -> None:
+    if previous is _SIGTERM_NOT_INSTALLED:
+        return
+    # None means the old handler was not set from Python: the default is closest
+    signal.signal(signal.SIGTERM, signal.SIG_DFL if previous is None else previous)
 
 
 def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=None) -> int:
@@ -662,8 +740,8 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
                                  classifier_factory or classify.LlamaServer, notifier)
             try:
                 memory.detect_corrections(state, router.candidates(), now)
-            except OSError as exc:
-                print(f"ERROR  detecting corrections: {exc}", file=sys.stderr)
+            except Exception as exc:  # noqa: BLE001 - learning never blocks routing
+                print(f"ERROR  detecting corrections: {exc!r}", file=sys.stderr)
         try:
             for target in targets:
                 directory = target.expanduser()
@@ -676,8 +754,7 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
             router.finish(now)
         return 0
     finally:
-        if previous_sigterm is not None:
-            signal.signal(signal.SIGTERM, previous_sigterm)
+        _restore_sigterm(previous_sigterm)
         os.close(lock_fd)  # releases the flock
 
 

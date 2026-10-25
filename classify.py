@@ -286,8 +286,9 @@ class LlamaServer:
                 pass
 
     def _is_llama(self, pid: int) -> bool:
+        """Our llama-server: the binary name *and* this model on its command line."""
         cmd = self._pid_cmdline(pid)
-        return bool(cmd) and "llama-server" in cmd
+        return bool(cmd) and "llama-server" in cmd and str(self.model_path) in cmd
 
     def _signal(self, pid: int, sig) -> None:
         try:
@@ -356,7 +357,8 @@ class LlamaServer:
             with self._urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
-            return _unsure(f"llama-server HTTP {exc.code}")
+            # a server-side failure, not the model's judgement: never a cacheable "unsure"
+            raise ServerUnavailable(f"llama-server HTTP {exc.code}") from exc
         except (urllib.error.URLError, OSError) as exc:
             raise ServerUnavailable(f"llama-server request failed: {exc}") from exc
         except http.client.HTTPException as exc:  # IncompleteRead, BadStatusLine, ...
