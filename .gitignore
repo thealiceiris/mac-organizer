@@ -6,3 +6,4 @@ __pycache__/
 /.worktrees/
 .superpowers/
 /rules.local.toml
+/rules.toml.v1.bak
