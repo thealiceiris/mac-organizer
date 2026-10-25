@@ -2,7 +2,7 @@
 # [[rule]]s here are evaluated before the shipped rules.
 
 [smart_sort]
-model_path = "~/Library/Application Support/Orb/models/gguf/google_gemma-4-E4B-it-Q4_K_M.gguf"
+# model_path = "~/models/your-model.gguf"  # required for smart sort: any GGUF chat model
 
 # Example: send anything with "cv" or "resume" in its name to a folder.
 # [[rule]]

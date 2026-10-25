@@ -618,3 +618,18 @@ def test_sigterm_not_installed_off_main_thread():
     route._restore_sigterm(out["prev"])  # the sentinel: a no-op
     assert out["prev"] is route._SIGTERM_NOT_INSTALLED
     assert signal.getsignal(signal.SIGTERM) == before
+
+
+def test_shipped_local_template_leaves_model_unset_and_falls_back(home, make_file):
+    """Fresh install: rules.local.default.toml sets no model_path -> 'model missing'."""
+    tmpl = Path(__file__).resolve().parent.parent / "rules.local.default.toml"
+    (home / "rules.local.toml").write_text(tmpl.read_text())
+    make_file(home / "Downloads/a.pdf", content="a")
+    notifier = FakeNotifier()
+    factory = FakeFactory(lambda s, n: NLP)
+
+    run_main(home, factory, notifier)
+
+    assert factory.made == 0
+    assert (home / "Documents/Inbox/a.pdf").exists()
+    assert notifier.batches[0].ai_unavailable is True

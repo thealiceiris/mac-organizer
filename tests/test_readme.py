@@ -22,3 +22,12 @@ def test_readme_documents_v2():
                   "Changing the model", "terminal-notifier"]:
         assert topic in text, topic
     assert "content analysis" not in text.lower()
+
+
+def test_no_personal_paths_in_published_files():
+    root = README.parent
+    files = [README, root / "rules.default.toml", root / "rules.local.default.toml"]
+    for f in files:
+        text = f.read_text()
+        assert "/Users/" not in text, f.name
+        assert "Orb" not in text and "gemma" not in text.lower(), f.name

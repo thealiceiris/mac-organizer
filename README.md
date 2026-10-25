@@ -13,7 +13,8 @@ them into the right folder in `~/Documents`, entirely on your Mac.
 - For smart sort and notifications (optional, `install.sh` tells you which are missing):
   - `llama-server` (`brew install llama.cpp`) and a GGUF chat model
   - `pdftotext` (`brew install poppler`) to read PDFs
-  - `terminal-notifier` (`brew install terminal-notifier`) for notifications
+  - `terminal-notifier` (`brew install terminal-notifier`) to make the
+    notification summary clickable (without it, plain macOS notifications are used)
 
 Without these tools the rule-based routing still works; documents that need
 the model simply wait in `~/Documents/Inbox`.
@@ -31,15 +32,18 @@ cd ~/.mac-organizer
 1. Runs `setup.py`, which creates `~/Inbox`, `~/Media/Images`,
    `~/Media/Screenshots`, `~/Documents/Inbox`, `~/Downloads/Installers`, and
    the state directory; detects your screenshot location; generates
-   `rules.toml` and a personal `rules.local.toml`; installs the `launchd` agents (one per watched folder plus a
-   10-minute sweep — five, or four when your screenshots already land in a
-   watched folder); and copies the Obsidian vault template to `~/Notes`
+   `rules.toml` and a personal `rules.local.toml`; installs the `launchd`
+   agents (one per watched folder plus a 10-minute sweep — five, or four when
+   your screenshots already land in a watched folder); and copies the Obsidian vault template to `~/Notes`
    (never overwriting existing files).
 2. Loads the agents with `launchctl`.
 3. Warns, with one `brew install ...` line, about any missing external tools.
    (launchd's `PATH` lacks Homebrew, so the check also looks in
    `/opt/homebrew/bin` and `/usr/local/bin`.)
 4. Prints a dry-run preview of what the router would do right now.
+
+Then set `model_path` in `~/.mac-organizer/rules.local.toml` (see "Changing the
+model"); until you do, smart sort is off and documents wait in the Inbox.
 
 Then open Obsidian and "Open folder as vault" → `~/Notes`.
 
@@ -88,11 +92,13 @@ when the batch ends (`--reasoning off`, `--offline`). Nothing is sent over the
 network, and nothing stays resident between batches.
 
 Settings live in `rules.local.toml`, which is created on install, git-ignored
-and never overwritten:
+and never overwritten. Smart sort stays off until you set the model path
+(an unset or missing model counts as "model missing": rule fallbacks apply and
+you get at most one notice a day):
 
 ```toml
 [smart_sort]
-model_path = "~/path/to/your-model.gguf"
+model_path = "~/models/your-model.gguf"
 ```
 
 Rules in `rules.local.toml` are evaluated before the shipped ones, so you can
@@ -101,7 +107,8 @@ add personal rules there (see the commented example in the file).
 ### Changing the model
 
 Any GGUF chat model that `llama-server` can load works. Download one, set
-`model_path` under `[smart_sort]` in `rules.local.toml`, and you are done; the
+`model_path` under `[smart_sort]` in `rules.local.toml` (also required after a
+fresh install), and you are done; the
 next batch uses it. To check that a model behaves, run the opt-in live test,
 which starts the real server and classifies a few sample documents:
 
@@ -118,18 +125,20 @@ Trash instead of being stored again (and logged).
 
 ## Notifications
 
-With `terminal-notifier` installed you get a notification when a smart-sort
-batch starts and a summary when it ends; clicking the summary opens a report of
-what went where. Batches handled purely by rules are silent. If the model
+You get a notification when a smart-sort batch starts and a summary when it
+ends. With `terminal-notifier` installed, clicking the summary opens a report
+of what went where; without it, mac-organizer falls back to macOS's built-in
+`osascript display notification` (not clickable). Batches handled purely by rules are silent. If the model
 cannot be started you get one notice saying files will wait in the Inbox.
 
 ## Learning from your corrections
 
 If you move a sorted file to a different folder in Finder, mac-organizer
 notices (within a 30-day window) and remembers. Similar past corrections and
-placements are shown to the model as examples on later runs. Verdicts are also
-cached, so an unchanged file is not classified twice; the cache is dropped when
-the set of candidate folders changes. This memory lives in
+placements are shown to the model as examples on later runs. "Unsure" verdicts
+are cached too, so a file the model could not place is not re-classified on
+every sweep; that cache is dropped when the set of candidate folders changes or
+you make a new correction. This memory lives in
 `~/.local/state/mac-organizer`.
 
 ## Disk images
