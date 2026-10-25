@@ -22,6 +22,7 @@ REPO_FILES = [
     "classify.py",
     "memory.py",
     "batch.py",
+    "notify.py",
     "plist.py",
     "rules.default.toml",
     "rules.local.default.toml",

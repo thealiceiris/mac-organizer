@@ -21,6 +21,7 @@ import dedupe as dupes
 import extract
 import fsops
 import memory
+import notify
 from batch import Batch, NullNotifier
 from fsops import DestDirMissing, candidate_names, move_no_clobber  # noqa: F401  (re-exported)
 
@@ -737,7 +738,8 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
             # A dry run never starts the model, writes state or notifies.
             state = default_state_dir()
             router = SmartRouter(config.smart, state,
-                                 classifier_factory or classify.LlamaServer, notifier)
+                                 classifier_factory or classify.LlamaServer,
+                                 notifier if notifier is not None else notify.Notifier(state))
             try:
                 memory.detect_corrections(state, router.candidates(), now)
             except Exception as exc:  # noqa: BLE001 - learning never blocks routing
