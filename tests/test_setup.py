@@ -134,3 +134,38 @@ def test_copy_vault_template_copies_new_files(tmp_path):
     setup.copy_vault_template(src, dest)
 
     assert (dest / ".obsidian/app.json").read_text() == "{}"
+
+
+def test_setup_creates_keys_dir_mode_700(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    setup.make_dirs()
+    assert (tmp_path / "Documents/Keys").stat().st_mode & 0o777 == 0o700
+    assert (tmp_path / "Media/Audio").is_dir()
+    assert (tmp_path / "Media/Video").is_dir()
+
+
+def test_migrate_rules_backs_up_v1_file(tmp_path):
+    out = tmp_path / "rules.toml"
+    out.write_text("# Default routing rules\n[[rule]]\n")
+    backup = setup.migrate_rules(out)
+    assert backup == tmp_path / "rules.toml.v1.bak"
+    assert backup.read_text().startswith("# Default routing rules")
+    assert not out.exists()
+
+
+def test_migrate_rules_leaves_v2_file(tmp_path):
+    out = tmp_path / "rules.toml"
+    out.write_text("# mac-organizer v2\n[[rule]]\n")
+    assert setup.migrate_rules(out) is None
+    assert out.exists()
+    assert setup.migrate_rules(tmp_path / "absent.toml") is None
+
+
+def test_write_local_rules_never_overwrites(tmp_path):
+    template = tmp_path / "rules.local.default.toml"
+    template.write_text("[smart_sort]\n")
+    out = tmp_path / "rules.local.toml"
+    assert setup.write_local_rules(template, out) is True
+    out.write_text("mine\n")
+    assert setup.write_local_rules(template, out) is False
+    assert out.read_text() == "mine\n"

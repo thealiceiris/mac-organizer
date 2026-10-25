@@ -1,6 +1,9 @@
+# mac-organizer v2
 # Default routing rules for mac-organizer.
 # Rules are evaluated top-to-bottom per source folder; first match wins.
 # Unmatched files are left where they are.
+# Personal rules and [smart_sort] settings go in rules.local.toml (git-ignored);
+# its rules are evaluated before these.
 
 # --- Screenshots -----------------------------------------------------------
 [[rule]]
@@ -17,7 +20,14 @@ ext = ["mov", "mp4"]
 action = "move_and_timestamp"
 dest = "~/Media/Screenshots/%Y-%m"
 
-# --- Desktop: sweep everything into the inbox -----------------------------
+# --- Desktop: .app bundles to Installers, everything else to the inbox -----
+[[rule]]
+source = "~/Desktop"
+kind = "dir"
+ext = ["app"]
+action = "move"
+dest = "~/Downloads/Installers"
+
 [[rule]]
 source = "~/Desktop"
 action = "move"
@@ -27,49 +37,149 @@ min_age_seconds = 60
 # --- Downloads -----------------------------------------------------------
 [[rule]]
 source = "~/Downloads"
+ext = ["png", "jpg", "jpeg", "gif", "webp", "heic", "svg"]
+action = "move"
+dest = "~/Media/Images"
+
+[[rule]]
+source = "~/Downloads"
+ext = ["mp3", "m4a", "wav", "aac", "flac", "aiff"]
+action = "move"
+dest = "~/Media/Audio"
+
+[[rule]]
+source = "~/Downloads"
+ext = ["mov", "mp4", "m4v", "mkv", "avi", "webm"]
+action = "move"
+dest = "~/Media/Video"
+
+[[rule]]
+source = "~/Downloads"
 ext = ["md", "markdown", "txt"]
 action = "move"
 dest = "~/Notes/00-Inbox"
 
 [[rule]]
 source = "~/Downloads"
-ext = ["png", "jpg", "jpeg", "gif", "webp", "heic"]
+ext = ["dmg", "pkg"]
 action = "move"
-dest = "~/Media/Images"
+dest = "~/Downloads/Installers"
 
 [[rule]]
 source = "~/Downloads"
-ext = ["pdf", "doc", "docx", "pages", "xls", "xlsx", "csv", "ppt", "pptx", "key"]
+ext = ["pem", "p12", "pfx", "cer", "crt", "asc", "gpg", "pgp"]
 action = "move"
+dest = "~/Documents/Keys"
+
+[[rule]]
+source = "~/Downloads"
+ext = ["ics"]
+action = "trash"
+min_age_seconds = 86400
+
+[[rule]]
+source = "~/Downloads"
+ext = ["zip", "tar", "gz", "tgz"]
+has_installer = true
+action = "move"
+dest = "~/Downloads/Installers"
+
+[[rule]]
+source = "~/Downloads"
+ext = ["zip", "tar", "gz", "tgz"]
+action = "smart"
+dest = ""
+
+[[rule]]
+source = "~/Downloads"
+ext = ["pdf", "doc", "docx", "pages", "xls", "xlsx", "csv", "ppt", "pptx", "key", "rtf"]
+action = "smart"
 dest = "~/Documents/Inbox"
 
 [[rule]]
 source = "~/Downloads"
-ext = ["dmg", "pkg", "zip", "tar", "gz", "tgz"]
+ext = ["ipynb", "py", "m", "slx", "html", "php", "js", "ts", "json", "yaml", "yml", "sql", "sh"]
+action = "smart"
+dest = "~/Documents/Development"
+
+# Folders (Downloads only): .app bundles to Installers, the rest sorted by the model.
+[[rule]]
+source = "~/Downloads"
+kind = "dir"
+ext = ["app"]
 action = "move"
 dest = "~/Downloads/Installers"
+
+[[rule]]
+source = "~/Downloads"
+kind = "dir"
+action = "smart"
+dest = ""
 
 # --- Inbox: the routing hub -------------------------------------------------
 [[rule]]
 source = "~/Inbox"
+ext = ["png", "jpg", "jpeg", "gif", "webp", "heic", "svg"]
+action = "move"
+dest = "~/Media/Images"
+
+[[rule]]
+source = "~/Inbox"
+ext = ["mp3", "m4a", "wav", "aac", "flac", "aiff"]
+action = "move"
+dest = "~/Media/Audio"
+
+[[rule]]
+source = "~/Inbox"
+ext = ["mov", "mp4", "m4v", "mkv", "avi", "webm"]
+action = "move"
+dest = "~/Media/Video"
+
+[[rule]]
+source = "~/Inbox"
 ext = ["md", "markdown", "txt"]
 action = "move"
 dest = "~/Notes/00-Inbox"
 
 [[rule]]
 source = "~/Inbox"
-ext = ["png", "jpg", "jpeg", "gif", "webp", "heic"]
+ext = ["dmg", "pkg"]
 action = "move"
-dest = "~/Media/Images"
+dest = "~/Downloads/Installers"
 
 [[rule]]
 source = "~/Inbox"
-ext = ["pdf", "doc", "docx", "pages", "xls", "xlsx", "csv", "ppt", "pptx", "key"]
+ext = ["pem", "p12", "pfx", "cer", "crt", "asc", "gpg", "pgp"]
 action = "move"
+dest = "~/Documents/Keys"
+
+[[rule]]
+source = "~/Inbox"
+ext = ["ics"]
+action = "trash"
+min_age_seconds = 86400
+
+[[rule]]
+source = "~/Inbox"
+ext = ["zip", "tar", "gz", "tgz"]
+has_installer = true
+action = "move"
+dest = "~/Downloads/Installers"
+
+[[rule]]
+source = "~/Inbox"
+ext = ["zip", "tar", "gz", "tgz"]
+action = "smart"
+dest = ""
+
+[[rule]]
+source = "~/Inbox"
+ext = ["pdf", "doc", "docx", "pages", "xls", "xlsx", "csv", "ppt", "pptx", "key", "rtf"]
+action = "smart"
 dest = "~/Documents/Inbox"
 
 [[rule]]
 source = "~/Inbox"
-ext = ["dmg", "pkg", "zip", "tar", "gz", "tgz"]
-action = "move"
-dest = "~/Downloads/Installers"
+ext = ["ipynb", "py", "m", "slx", "html", "php", "js", "ts", "json", "yaml", "yml", "sql", "sh"]
+action = "smart"
+dest = "~/Documents/Development"

@@ -1,0 +1,12 @@
+# Personal overrides for mac-organizer (git-ignored once copied to rules.local.toml).
+# [[rule]]s here are evaluated before the shipped rules.
+
+[smart_sort]
+model_path = "~/Library/Application Support/Orb/models/gguf/google_gemma-4-E4B-it-Q4_K_M.gguf"
+
+# Example: send anything with "cv" or "resume" in its name to a folder.
+# [[rule]]
+# source = "~/Downloads"
+# name_regex = "cv|resume"
+# action = "move"
+# dest = "~/Documents/Career"

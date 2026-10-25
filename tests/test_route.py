@@ -76,7 +76,7 @@ def test_default_rules_file_loads(tmp_path):
     assert Path("~/Downloads").expanduser() in route.sources(rules)
     assert Path("~/Desktop").expanduser() in route.sources(rules)
     assert Path("~/Inbox").expanduser() in route.sources(rules)
-    assert all(r.action in {"move", "move_and_timestamp", "skip"} for r in rules)
+    assert all(r.action in {"move", "move_and_timestamp", "skip", "trash", "smart"} for r in rules)
 
 
 def _rule(**kw):
@@ -578,3 +578,126 @@ def test_process_dir_survives_an_unreadable_directory(tmp_path, monkeypatch, cap
 
     assert done == []
     assert "ERROR" in capsys.readouterr().err
+
+
+# --- v2 config -------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_load_config_local_rules_come_first(tmp_path):
+    shipped = tmp_path / "rules.toml"
+    shipped.write_text('[[rule]]\nsource = "~/Downloads"\naction = "move"\ndest = "~/Shipped"\n')
+    local = tmp_path / "rules.local.toml"
+    local.write_text('[[rule]]\nsource = "~/Downloads"\naction = "move"\ndest = "~/Local"\n')
+
+    cfg = route.load_config(shipped, local)
+
+    assert [r.dest for r in cfg.rules] == ["~/Local", "~/Shipped"]
+    assert [r.dest for r in route.load_rules(shipped)] == ["~/Shipped"]
+
+
+def test_load_config_smart_defaults(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    shipped = tmp_path / "rules.toml"
+    shipped.write_text("")
+
+    cfg = route.load_config(shipped, None)
+    assert cfg.smart.enabled is True
+    assert cfg.smart.threshold == 0.6
+    assert cfg.smart.model_path is None
+    assert cfg.smart.documents_root == tmp_path / "Documents"
+
+    local = tmp_path / "rules.local.toml"
+    local.write_text('[smart_sort]\nmodel_path = "~/m.gguf"\n')
+    cfg = route.load_config(shipped, local)
+    assert cfg.smart.model_path == Path.home() / "m.gguf"
+
+    missing = route.load_config(shipped, tmp_path / "nope.toml")
+    assert missing.smart.model_path is None
+
+
+def test_rule_kind_and_regex_parse(tmp_path):
+    toml = tmp_path / "r.toml"
+    toml.write_text(
+        '[[rule]]\nsource = "~/Downloads"\nkind = "dir"\nname_regex = "cv|resume"\n'
+        'has_installer = true\naction = "smart"\n'
+    )
+    rule = route.load_rules(toml)[0]
+    assert rule.kind == "dir"
+    assert rule.name_regex == "cv|resume"
+    assert rule.has_installer is True
+    plain = route.Rule(source=Path("/x"), action="move")
+    assert (plain.kind, plain.name_regex, plain.has_installer) == ("file", None, None)
+
+
+@pytest.fixture
+def default_rules(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    text = (REPO_ROOT / "rules.default.toml").read_text().replace("@@SCREENSHOT_DIR@@", "~/Desktop")
+    path = tmp_path / "rules.toml"
+    path.write_text(text)
+    return route.load_rules(path)
+
+
+def _for_source(rules, item):
+    return [r for r in rules if r.source == item.parent]
+
+
+def _dl(tmp_path, name, make_file, age=3600, folder="Downloads"):
+    return make_file(tmp_path / folder / name, age_seconds=age)
+
+
+def test_default_rules_cover_v2_types(default_rules, tmp_path, make_file):
+    now = time.time()
+
+    def match(name, age=3600):
+        item = _dl(tmp_path, name, make_file, age)
+        return route.match_rule(item, _for_source(default_rules, item), now)
+
+    assert match("a.m4a").dest == "~/Media/Audio"
+    assert match("a.mov").dest == "~/Media/Video"
+    assert match("a.svg").dest == "~/Media/Images"
+    assert match("k.pem").dest == "~/Documents/Keys"
+    assert match("deck.key").dest != "~/Documents/Keys"
+    assert match("a.ics", age=2 * 86400).action == "trash"
+    assert match("a.ics", age=3600) is None
+    pdf = match("a.pdf")
+    assert (pdf.action, pdf.dest) == ("smart", "~/Documents/Inbox")
+    nb = match("x.ipynb")
+    assert (nb.action, nb.dest) == ("smart", "~/Documents/Development")
+
+    candidates = [
+        r for r in default_rules
+        if r.source == tmp_path / "Downloads" and r.kind == "file" and "zip" in r.ext
+    ]
+    assert candidates[0].has_installer is True
+    assert candidates[1].action == "smart" and candidates[1].dest == ""
+
+
+def test_default_rules_desktop_dirs(default_rules, tmp_path):
+    now = time.time()
+    app = tmp_path / "Desktop" / "Foo.app"
+    app.mkdir(parents=True)
+    plain = tmp_path / "Desktop" / "stuff"
+    plain.mkdir()
+    for p in (app, plain):
+        os.utime(p, (now - 3600, now - 3600))
+
+    hit = route.match_rule(app, _for_source(default_rules, app), now)
+    assert hit is not None and hit.dest == "~/Downloads/Installers"
+    assert route.match_rule(plain, _for_source(default_rules, plain), now) is None
+
+
+def test_rule_kind_filters_items(tmp_path):
+    now = time.time()
+    d = tmp_path / "Foo.app"
+    d.mkdir()
+    f = tmp_path / "bar.app"
+    f.write_text("x")
+    for p in (d, f):
+        os.utime(p, (now - 3600, now - 3600))
+    dir_rule = route.Rule(source=tmp_path, action="move", ext=frozenset({"app"}), kind="dir")
+    file_rule = route.Rule(source=tmp_path, action="move", ext=frozenset({"app"}))
+    assert route.rule_matches(dir_rule, d, now) and not route.rule_matches(dir_rule, f, now)
+    assert route.rule_matches(file_rule, f, now) and not route.rule_matches(file_rule, d, now)

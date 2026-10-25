@@ -18,6 +18,7 @@ REPO_FILES = [
     "route.py",
     "plist.py",
     "rules.default.toml",
+    "rules.local.default.toml",
 ]
 
 

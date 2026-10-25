@@ -6,6 +6,7 @@ import argparse
 import fcntl
 import fnmatch
 import os
+import re
 import shutil
 import sys
 import time
@@ -23,17 +24,40 @@ class Rule:
     ext: frozenset[str] = frozenset()
     glob: str | None = None
     min_age_seconds: int = 0
+    kind: str = "file"  # "file" or "dir"
+    name_regex: str | None = None  # case-insensitive search on the item name
+    has_installer: bool | None = None  # archives only; honoured from Task 4
+
+
+@dataclass(frozen=True)
+class SmartSettings:
+    enabled: bool
+    threshold: float
+    model_path: Path | None
+    documents_root: Path
+
+
+@dataclass(frozen=True)
+class Config:
+    rules: list[Rule]
+    smart: SmartSettings
 
 
 def _norm_ext(values) -> frozenset[str]:
     return frozenset(str(v).lower().lstrip(".") for v in values)
 
 
-def load_rules(path: Path) -> list[Rule]:
+def _read_toml(path: Path | None) -> dict:
+    if path is None or not path.exists():
+        return {}
     with open(path, "rb") as fh:
-        data = tomllib.load(fh)
+        return tomllib.load(fh)
+
+
+def _parse_rules(data: dict) -> list[Rule]:
     rules: list[Rule] = []
     for entry in data.get("rule", []):
+        has_installer = entry.get("has_installer")
         rules.append(
             Rule(
                 source=Path(entry["source"]).expanduser(),
@@ -42,9 +66,32 @@ def load_rules(path: Path) -> list[Rule]:
                 ext=_norm_ext(entry.get("ext", [])),
                 glob=entry.get("glob"),
                 min_age_seconds=int(entry.get("min_age_seconds", 0)),
+                kind=entry.get("kind", "file"),
+                name_regex=entry.get("name_regex"),
+                has_installer=None if has_installer is None else bool(has_installer),
             )
         )
     return rules
+
+
+def load_config(rules_path: Path, local_path: Path | None) -> Config:
+    """Shipped rules plus an optional local overlay; local rules win."""
+    with open(rules_path, "rb") as fh:
+        shipped = tomllib.load(fh)
+    local = _read_toml(local_path)
+    smart = {**shipped.get("smart_sort", {}), **local.get("smart_sort", {})}
+    model = smart.get("model_path")
+    settings = SmartSettings(
+        enabled=bool(smart.get("enabled", True)),
+        threshold=float(smart.get("threshold", 0.6)),
+        model_path=Path(model).expanduser() if model else None,
+        documents_root=Path(smart.get("documents_root", "~/Documents")).expanduser(),
+    )
+    return Config(rules=_parse_rules(local) + _parse_rules(shipped), smart=settings)
+
+
+def load_rules(path: Path) -> list[Rule]:
+    return load_config(path, None).rules
 
 
 def sources(rules: list[Rule]) -> list[Path]:
@@ -114,6 +161,13 @@ def should_skip(path: Path, now: float) -> bool:
 
 
 def rule_matches(rule: Rule, path: Path, now: float) -> bool:
+    if rule.kind == "dir":
+        if not path.is_dir():
+            return False
+    elif not path.is_file():
+        return False
+    if rule.name_regex and not re.search(rule.name_regex, path.name, re.IGNORECASE):
+        return False
     if rule.ext and path.suffix.lower().lstrip(".") not in rule.ext:
         return False
     if rule.glob and not fnmatch.fnmatch(path.name, rule.glob):

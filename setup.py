@@ -16,8 +16,11 @@ SWEEP_INTERVAL = 600
 DIRS_TO_CREATE = [
     "~/Inbox",
     "~/Media/Images",
+    "~/Media/Audio",
+    "~/Media/Video",
     "~/Media/Screenshots",
     "~/Documents/Inbox",
+    "~/Documents/Keys",
     "~/Downloads/Installers",
 ]
 
@@ -53,7 +56,29 @@ def detect_screenshot_dir(runner=subprocess.run) -> Path:
 def make_dirs() -> None:
     for entry in DIRS_TO_CREATE:
         Path(entry).expanduser().mkdir(parents=True, exist_ok=True)
+    Path("~/Documents/Keys").expanduser().chmod(0o700)
     state_dir().mkdir(parents=True, exist_ok=True)
+
+
+V2_HEADER = "# mac-organizer v2"
+
+
+def migrate_rules(out_path: Path) -> Path | None:
+    """Move a v1 rules.toml (no v2 header line) aside; return the backup path."""
+    if not out_path.exists():
+        return None
+    if V2_HEADER in out_path.read_text().splitlines():
+        return None
+    backup = out_path.with_name(out_path.name + ".v1.bak")
+    out_path.rename(backup)
+    return backup
+
+
+def write_local_rules(template: Path, out: Path) -> bool:
+    if out.exists():
+        return False
+    out.write_text(template.read_text())
+    return True
 
 
 def write_rules(default_path: Path, out_path: Path, screenshot_dir: Path) -> bool:
@@ -140,14 +165,21 @@ def main() -> None:
     screenshot_dir = detect_screenshot_dir()
 
     make_dirs()
+    backup = migrate_rules(REPO / "rules.toml")
     wrote_rules = write_rules(
         REPO / "rules.default.toml", REPO / "rules.toml", screenshot_dir
+    )
+    wrote_local = write_local_rules(
+        REPO / "rules.local.default.toml", REPO / "rules.local.toml"
     )
     agents = install_agents(python, route_py, screenshot_dir)
     copy_vault_template(REPO / "vault-template", Path("~/Notes").expanduser())
 
     print(f"screenshot dir: {screenshot_dir}")
     print(f"rules.toml: {'created' if wrote_rules else 'left as-is (already exists)'}")
+    if backup:
+        print(f"v1 rules.toml backed up to {backup}")
+    print(f"rules.local.toml: {'created' if wrote_local else 'left as-is (already exists)'}")
     for path in agents:
         print(f"agent: {path}")
     print(f"vault: {Path('~/Notes').expanduser()}")

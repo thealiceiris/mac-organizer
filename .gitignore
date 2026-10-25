@@ -5,3 +5,4 @@ __pycache__/
 /rules.toml
 /.worktrees/
 .superpowers/
+/rules.local.toml
