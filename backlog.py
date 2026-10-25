@@ -19,9 +19,10 @@ import sys
 import time
 import tomllib
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+import classify
 import dedupe as dupes
 import fsops
 import memory
@@ -64,6 +65,7 @@ class Line:
     dst: Path  # TRASH of a duplicate: the identical item that is kept
     reason: str = ""
     folder: str = ""  # candidate name for a smart decision, else empty
+    problem: str = field(default="", compare=False)  # set by read_report: reject this line
 
     def tsv(self) -> str:
         reason = " ".join(self.reason.split())
@@ -305,19 +307,35 @@ def _write_report(state: Path, now: float, lines: list[Line], notes: list[str],
         header.append("WARNING: AI sorting was unavailable while planning: unsure items fell back"
                       " to their rule's folder or stay where they are.")
     header += notes
+    header.append(f"planned-at: {now!r}")
     with fh:
         fh.write("".join(f"# {h}\n" for h in header))
         fh.write("".join(ln.tsv() + "\n" for ln in lines))
     return path
 
 
-def read_report(report: Path) -> list[Line]:
-    """The approved (non-``#``) lines. Raises ReportError if any line is not valid."""
+PLANNED_AT = "# planned-at: "
+
+
+def read_report(report: Path) -> tuple[float, list[Line]]:
+    """The plan time and the approved (non-``#``) lines.
+
+    Raises ReportError if the report is not one ``plan`` wrote or a line is not
+    a report line at all (nothing is applied then). Lines that are well formed
+    but not normalised carry a ``problem`` and are rejected one by one on apply.
+    """
     lines: list[Line] = []
     errors: list[str] = []
+    planned_at = None
     text = Path(report).read_bytes().decode("utf-8")
     for n, raw in enumerate(text.split("\n"), 1):
         raw = raw.removesuffix("\r")
+        if raw.startswith(PLANNED_AT):
+            try:
+                planned_at = float(raw[len(PLANNED_AT):])
+            except ValueError:
+                errors.append(f"line {n}: bad plan time: {raw!r}")
+            continue
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
         f = raw.split("\t")
@@ -327,16 +345,15 @@ def read_report(report: Path) -> list[Line]:
                 or not f[2].startswith("/"):
             errors.append(f"line {n}: not a report line: {raw!r}")
             continue
-        line = Line(f[0], Path(f[1]), Path(f[2]), f[3], f[4])
-        if line.action == "GROUP" and (line.dst.parent.parent != _development()
-                                       or line.dst.name != line.src.name):
-            errors.append(f"line {n}: GROUP destination must be "
-                          f"{_development()}/<name>/{line.src.name}")
-            continue
-        lines.append(line)
+        problem = ""
+        if any(os.path.normpath(x) != x for x in f[1:3]):
+            problem = "path is not normalised"
+        lines.append(Line(f[0], Path(f[1]), Path(f[2]), f[3], f[4], problem))
+    if planned_at is None and not errors:
+        errors.append("no '# planned-at:' line: not a report written by --backlog")
     if errors:
         raise ReportError("\n".join(errors))
-    return lines
+    return planned_at, lines
 
 
 # ---------------------------------------------------------------- apply
@@ -373,46 +390,143 @@ class _Skip(Exception):
     pass
 
 
-def apply(report: Path, log_path: Path) -> list[Action]:
-    """Perform the report's non-``#`` lines, each re-checked first. Returns what was done."""
-    lines = read_report(report)
+class _Reject(Exception):
+    """The line is not one the planner could have produced."""
+
+
+def _default_config():
+    here = Path(route.__file__).resolve().parent
+    return route.load_config(here / "rules.toml", here / "rules.local.toml")
+
+
+class _Checker:
+    """Re-validates each approved line against what planning could have produced."""
+
+    def __init__(self, config, planned_at: float, now: float):
+        self.config = config
+        self.planned_at = planned_at
+        self.now = now
+        downloads = _downloads().resolve()
+        self.leftovers = {(downloads / n) for n in LEFTOVER_DIRS}
+        self.sources = {downloads, _inbox().resolve(), *self.leftovers,
+                        *(r.source.resolve() for r in config.rules)}
+        self.cands = {c.name: c.path for c in classify.candidates(config.smart.documents_root)}
+        # routing without a model: smart items get their rule's fallback (or stay)
+        off = replace(config.smart, enabled=False, model_path=None)
+        self.router = route.SmartRouter(off, route.default_state_dir(), _no_model,
+                                        read_only=True)
+
+    def structure(self, ln: Line) -> None:
+        if ln.problem:
+            raise _Reject(ln.problem)
+        if not route.within_home(ln.src) or not route.within_home(ln.dst):
+            raise _Reject("outside home")
+        parent = ln.src.parent.resolve()
+        if parent not in self.sources:
+            raise _Reject(f"{ln.src.parent} is not a folder the backlog sorts")
+        if ln.action == "GROUP":
+            if parent != _downloads().resolve():
+                raise _Reject("project files are grouped from ~/Downloads only")
+            if ln.dst.parent.parent != _development() or ln.dst.name != ln.src.name \
+                    or ln.dst.parent.name in ("", ".", ".."):
+                raise _Reject(f"must go to {_development()}/<name>/{ln.src.name}")
+        elif ln.action == "TRASH":
+            in_trash = ln.dst.parent.resolve() == _trash_dir().resolve()
+            if in_trash and ln.dst.name != ln.src.name:
+                raise _Reject("renamed on the way to the Trash")
+        elif ln.folder:
+            cand = self.cands.get(ln.folder)
+            if cand is None:
+                raise _Reject(f"'{ln.folder}' is not an existing sort folder")
+            if ln.dst != cand / ln.src.name:
+                raise _Reject(f"must go to {cand / ln.src.name}")
+
+    def unchanged(self, ln: Line) -> None:
+        src = ln.src
+        if src.is_dir() and not src.is_symlink():
+            changed = not route.dir_is_settled(src, self.now, self.now - self.planned_at)
+        else:
+            changed = os.lstat(src).st_mtime > self.planned_at
+        if changed:
+            raise _Skip("changed since planning")
+        if ln.action == "GROUP":  # project dotfiles (.gitignore, .env) are expected here
+            if not _settled(src, self.now):
+                raise _Skip("still changing")
+        elif route.should_skip(src, self.now):
+            raise _Skip("skipped by the safety rules (hidden, partial or still changing)")
+
+    def routed_here(self, ln: Line) -> None:
+        """A MOVE without a folder must match what the rules decide for ``src`` now."""
+        parent = ln.src.parent.resolve()
+        inbox = parent == _inbox().resolve()
+        source = _downloads() if inbox or parent in self.leftovers else ln.src.parent
+        planned = route.plan_item(ln.src, self.config, self.router, self.now, source=source)
+        if planned is None or planned.action.verb == "TRASH" or planned.action.dst != ln.dst \
+                or (inbox and planned.rule.action == "smart"):
+            raise _Reject("not where the rules send it")
+
+
+def _no_model(*a, **kw):
+    raise classify.ServerUnavailable("the backlog apply never starts the model")
+
+
+def apply(report: Path, log_path: Path, config=None) -> list[Action]:
+    """Perform the report's non-``#`` lines, each re-checked first. Returns what was done.
+
+    A line is performed only if planning could have produced it, its source is
+    still there and unchanged since the plan, and the safety rules allow it.
+    """
+    planned_at, lines = read_report(report)
+    config = config if config is not None else _default_config()
     state = route.default_state_dir()
     now = time.time()
+    check = _Checker(config, planned_at, now)
     done: list[Action] = []
     tally: Counter = Counter()
     moved: dict[Path, Path] = {}  # a line's src and planned dst -> where it really went
     groups: dict[Path, Path] = {}  # planned project folder -> folder created this run
     for ln in lines:
         try:
+            check.structure(ln)
+            if not os.path.lexists(ln.src):
+                raise _Skip("missing (already moved or deleted)")
+            check.unchanged(ln)
+            if ln.action == "MOVE" and not ln.folder:
+                check.routed_here(ln)
             outcome, action = _apply_line(ln, log_path, state, now, moved, groups)
+        except _Reject as why:
+            tally["rejected"] += 1
+            print(f"REJECTED {ln.src}: {why}")
+            continue
         except _Skip as why:
             tally["skipped"] += 1
             print(f"SKIPPED  {ln.src}: {why}")
             continue
-        except OSError as exc:
+        except Exception as exc:  # noqa: BLE001 - one line never stops the rest
             tally["failed"] += 1
-            print(f"FAILED   {ln.src}: {exc}")
-            route._log(log_path, "ERROR", ln.src, ln.dst)
+            print(f"FAILED   {ln.src}: {exc!r}")
+            try:
+                route._log(log_path, "ERROR", ln.src, ln.dst)
+            except OSError:
+                pass
             continue
         tally[outcome] += 1
         done.append(action)
         print(f"{outcome.upper():<8} {action.src} -> {action.dst}")
+    check.router.close()
     for d in sorted({ln.src.parent for ln in lines}):
         if d.name in LEFTOVER_DIRS and d.parent.resolve() == _downloads().resolve():
             _remove_if_empty(d)
     print("Backlog applied: " + ", ".join(
         f"{tally[k]} {label}" for k, label in [
             ("moved", "moved"), ("grouped", "grouped"), ("trashed", "to Trash"),
-            ("duplicate", "duplicates to Trash"), ("skipped", "skipped"), ("failed", "failed")]))
+            ("duplicate", "duplicates to Trash"), ("skipped", "skipped"),
+            ("rejected", "rejected"), ("failed", "failed")]))
     return done
 
 
 def _apply_line(ln: Line, log_path: Path, state: Path, now: float,
                 moved: dict[Path, Path], groups: dict[Path, Path]) -> tuple[str, Action]:
-    if not os.path.lexists(ln.src):
-        raise _Skip("missing (already moved or deleted)")
-    if not route.within_home(ln.src) or not route.within_home(ln.dst):
-        raise _Skip(f"outside home: {ln.dst}")
     if ln.action == "MOVE":
         action = Action(ln.src, ln.dst, verb="SMART" if ln.folder else "MOVE",
                         no_mkdir=bool(ln.folder))
@@ -435,7 +549,7 @@ def _apply_line(ln: Line, log_path: Path, state: Path, now: float,
                                                  False, log_path)
         twin = moved.get(ln.dst, ln.dst)
         if not _identical(ln.src, twin):
-            raise _Skip(f"kept: its identical copy {twin} is not there")
+            raise _Reject(f"not byte-identical to {twin} (or it is not there)")
         fsops.trash(ln.src)
         route._log(log_path, "DUPLICATE", ln.src, twin)
         return "duplicate", Action(ln.src, twin, verb="TRASH", duplicate=True)

@@ -768,8 +768,6 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
 
     previous_sigterm = _install_sigterm()
     try:
-        if args.apply is not None:
-            return _backlog_apply(args.apply, log_path)
         try:
             config = load_config(args.rules, args.rules.parent / "rules.local.toml")
         except FileNotFoundError:
@@ -779,6 +777,8 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
             )
             return 1
         rules = config.rules
+        if args.apply is not None:
+            return _backlog_apply(args.apply, log_path, config)
         if args.backlog:
             return _backlog_plan(args.paths, config, classifier_factory)
 
@@ -835,14 +835,15 @@ def _backlog_plan(paths: list[Path], config: Config, classifier_factory) -> int:
     return 0
 
 
-def _backlog_apply(report: Path, log_path: Path) -> int:
+def _backlog_apply(report: Path, log_path: Path, config: Config) -> int:
     import backlog
 
     try:
-        backlog.apply(report, log_path)
-    except (OSError, ValueError) as exc:  # unreadable or invalid report: nothing applied
+        backlog.read_report(report)
+    except (OSError, ValueError) as exc:  # unreadable or invalid report
         print(f"report not applied, nothing moved: {exc}", file=sys.stderr)
         return 2
+    backlog.apply(report, log_path, config)  # each line's failure is contained and counted
     return 0
 
 

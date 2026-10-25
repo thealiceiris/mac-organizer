@@ -91,7 +91,7 @@ def do_plan(home, factory, *dirs):
 
 
 def do_apply(home, report):
-    return backlog.apply(report, home / "actions.log")
+    return backlog.apply(report, home / "actions.log", config=config(home))
 
 
 def lines(report):
@@ -503,3 +503,103 @@ def test_cli_backlog_refuses_when_locked(home, make_file, capsys):
         os.close(fd)
     assert "already running" in capsys.readouterr().err
     assert not (state(home) / "reports").exists()
+
+
+# ---------------------------------------------------------------- fix round 1
+
+
+def _append(report, *rows):
+    with open(report, "a") as fh:
+        for r in rows:
+            fh.write("\t".join(str(x) for x in r) + "\n")
+
+
+def test_apply_rejects_lines_the_planner_could_not_have_produced(home, make_file, capsys):
+    make_file(home / "Downloads/a.png", content="a")
+    report = do_plan(home, FakeFactory(), "Downloads")
+    thesis = make_file(home / "Documents/Thesis/ch1.tex", content="t").parent
+    ssh = make_file(home / ".ssh/id_ed25519", content="key")
+    cv = make_file(home / "Documents/Career/cv.pdf", content="cv")
+    b = make_file(home / "Downloads/b.png", content="b")
+    other = make_file(home / "Downloads/c.png", content="different")
+    loose = make_file(home / "Downloads/x.json", content="{}")
+    dev = home / "Documents/Development"
+    _append(report,
+            ["MOVE", thesis, home / "Library/Caches/new/sub/Thesis", "r", ""],
+            ["MOVE", ssh, home / "Media/Images/id_ed25519", "r", ""],
+            ["TRASH", cv, home / ".Trash/cv.pdf", "r", ""],
+            ["GROUP", thesis, dev / "foo/Thesis", "r", ""],
+            ["GROUP", loose, f"{dev}/../x.json", "r", ""],
+            ["MOVE", b, home / "Documents/Career/b.png", "r", ""],  # not where the rules send it
+            ["MOVE", b, home / "Documents/Nope/b.png", "r", "Nope"],  # not a sort folder
+            ["MOVE", b, home / "Documents/Career/renamed.png", "r", "Career"],  # renamed
+            ["TRASH", b, other, "identical to c.png", ""])  # not identical
+
+    done = do_apply(home, report)
+
+    assert [a.src.name for a in done] == ["a.png"]
+    for item in (thesis, ssh, cv, b, other, loose):
+        assert item.exists()
+    assert not (home / "Library/Caches").exists()
+    assert sorted(p.name for p in dev.iterdir()) == []
+    assert sorted(p.name for p in (home / ".Trash").iterdir()) == []
+    out = capsys.readouterr().out
+    assert out.count("REJECTED") == 9
+    assert "9 rejected" in out
+
+
+def test_apply_skips_src_changed_since_planning(home, make_file, capsys):
+    make_file(home / "Downloads/a.png", content="a")
+    make_file(home / "Downloads/data/rows.csv", content="r")
+    os.utime(home / "Downloads/data", (time.time() - 3600,) * 2)
+    report = do_plan(home, FakeFactory(lambda name: NLP), "Downloads")
+    assert {f[0] for f in lines(report)} == {"MOVE"} and len(lines(report)) == 2
+    # pretend the plan is two hours old: both items changed after it
+    text = report.read_text()
+    stamp = next(ln for ln in text.splitlines() if ln.startswith("# planned-at: "))
+    old = float(stamp.split(": ")[1]) - 7200
+    report.write_text(text.replace(stamp, f"# planned-at: {old!r}"))
+
+    assert do_apply(home, report) == []
+    assert (home / "Downloads/a.png").exists()
+    assert (home / "Downloads/data/rows.csv").exists()
+    out = capsys.readouterr().out
+    assert out.count("changed since planning") == 2
+
+
+def test_apply_skips_items_should_skip_rejects(home, make_file, capsys):
+    report = do_plan(home, FakeFactory(), "Downloads")
+    secret = make_file(home / "Downloads/.secret.png", content="s")
+    _append(report, ["MOVE", secret, home / "Media/Images/.secret.png", "r", ""])
+    assert do_apply(home, report) == []
+    assert secret.exists()
+    assert "SKIPPED" in capsys.readouterr().out
+
+
+def test_unexpected_error_on_one_line_is_failed_and_the_rest_runs(home, make_file, monkeypatch,
+                                                                  capsys):
+    make_file(home / "Downloads/Keys/a.pem", content="a")
+    make_file(home / "Downloads/Keys/b.pem", content="b")
+    report = do_plan(home, FakeFactory(), "Downloads")
+    real = route.apply_action
+
+    def flaky(action, dry_run, log_path):
+        if action.src.name == "a.pem":
+            raise RuntimeError("boom")
+        return real(action, dry_run, log_path)
+
+    monkeypatch.setattr(route, "apply_action", flaky)
+    done = do_apply(home, report)
+    assert [a.src.name for a in done] == ["b.pem"]
+    out = capsys.readouterr().out
+    assert "FAILED" in out and "1 failed" in out and "1 moved" in out
+    assert "KEPT" in out  # leftover cleanup still ran
+
+
+def test_cli_malformed_report_moves_nothing(home, make_file, capsys):
+    make_file(home / "Downloads/a.png", content="a")
+    report = do_plan(home, FakeFactory(), "Downloads")
+    report.write_text(report.read_text().replace("\t", "    "))
+    assert run_main(home, "--backlog", "--apply", report) == 2
+    assert "nothing moved" in capsys.readouterr().err
+    assert (home / "Downloads/a.png").exists()
