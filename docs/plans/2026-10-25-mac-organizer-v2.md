@@ -485,19 +485,22 @@ Every external tool is called through an injectable `runner`, following the exis
 
 There is no new code in this task. **Each ⛔ step waits for the user's explicit go-ahead.**
 
+The order matters (final review C2, Ruling 22). The v2 sweep agent runs at load, so the agents must stay unloaded until the backlog is approved and applied. Otherwise the live sweep would move `~/Downloads` items before the user sees the report.
+
 - [ ] **Step 1:** `brew install poppler terminal-notifier`. Verify with `which pdftotext terminal-notifier`.
-- [ ] **Step 2:** Run the live model test from Task 5 on the real Mac. Expected: pass.
-- [ ] **Step 3:** In the worktree, run a dry-run sweep against the real folders: `python3 route.py --dry-run`. Show the user the output.
-- [ ] **Step 4 ⛔:** Merge `v2` into `main` in `~/.mac-organizer`, then run `./install.sh`. Verify:
+- [ ] **Step 2:** Run the live model test against the real model: `MAC_ORGANIZER_LIVE=1 MAC_ORGANIZER_MODEL=<model path> .venv/bin/python -m pytest tests/test_classify_live.py -q -s`. Expected: pass.
+- [ ] **Step 3 ⛔:** Unload all `com.mac-organizer.*` agents (`launchctl bootout`). Then merge `v2` into `main` in `~/.mac-organizer`, run `python3 setup.py` (which writes rules and plists), and immediately unload any agents it wrote **without loading them**. Verify:
   - `rules.toml.v1.bak` exists
-  - `launchctl list | grep mac-organizer` shows 5 agents
+  - `launchctl list | grep mac-organizer` is empty
   - the full test suite passes in `~/.mac-organizer`
-- [ ] **Step 5:** `python3 route.py --backlog ~/Documents/Inbox ~/Downloads`. Hand the report path to the user, and summarise the counts per destination plus the TRASH lines.
+- [ ] **Step 4:** Write the user's model path into the git-ignored `~/.mac-organizer/rules.local.toml`.
+- [ ] **Step 5:** `python3 route.py --backlog ~/Documents/Inbox ~/Downloads`. Hand the report path to the user, and summarise the counts per destination plus the TRASH and GROUP lines.
 - [ ] **Step 6 ⛔:** After the user approves (with any vetoes), run `python3 route.py --backlog --apply <report>`. Report the before and after counts for `~/Documents/Inbox` and `~/Downloads`.
-- [ ] **Step 7:** `git tag -a v2.0.0 -m "mac-organizer v2.0.0"`
-- [ ] **Step 8 ⛔:** The user runs `! gh auth login` and chooses public or private. Then:
+- [ ] **Step 7 ⛔:** Load the agents with `./install.sh`. Verify that `launchctl list | grep mac-organizer` shows 5 agents and that the install dry-run preview looks sane.
+- [ ] **Step 8:** `git tag -a v2.0.0 -m "mac-organizer v2.0.0"`
+- [ ] **Step 9 ⛔:** The user runs `! gh auth login` and chooses public or private. Then:
   - `gh repo create mac-organizer --<visibility> --source ~/.mac-organizer --push`
   - `git push origin v1.0.0 v2.0.0`
   - create GitHub releases for both tags with short notes
 
-  Before pushing, confirm with `git ls-files` that nothing personal is tracked: no `rules.toml`, `rules.local.toml`, state or logs.
+  Before pushing, confirm with `git ls-files` that nothing personal is tracked: no `rules.toml`, `rules.local.toml`, state or logs. Also consider whether course names in the tracked docs and specs should be genericised first.
