@@ -486,15 +486,24 @@ class _Checker:
         elif route.should_skip(src, self.now):
             raise _Skip("skipped by the safety rules (hidden, partial or still changing)")
 
-    def routed_here(self, ln: Line) -> None:
-        """A MOVE without a folder must match what the rules decide for ``src`` now."""
+    def _replan(self, ln: Line):
         parent = ln.src.parent.resolve()
         inbox = parent == _inbox().resolve()
         source = _downloads() if inbox or parent in self.leftovers else ln.src.parent
-        planned = route.plan_item(ln.src, self.config, self.router, self.now, source=source)
+        return inbox, route.plan_item(ln.src, self.config, self.router, self.now, source=source)
+
+    def routed_here(self, ln: Line) -> None:
+        """A MOVE without a folder must match what the rules decide for ``src`` now."""
+        inbox, planned = self._replan(ln)
         if planned is None or planned.action.verb == "TRASH" or planned.action.dst != ln.dst \
                 or (inbox and planned.rule.action == "smart"):
             raise _Reject("not where the rules send it")
+
+    def trashed_by_rule(self, ln: Line) -> None:
+        """A TRASH into the Trash (not a duplicate) must be what a trash rule decides now."""
+        _, planned = self._replan(ln)
+        if planned is None or planned.action.verb != "TRASH":
+            raise _Reject("no rule sends it to the Trash")
 
 
 def _no_model(*a, **kw):
@@ -524,6 +533,8 @@ def apply(report: Path, log_path: Path, config=None) -> list[Action]:
             check.unchanged(ln)
             if ln.action == "MOVE" and not ln.folder:
                 check.routed_here(ln)
+            elif ln.action == "TRASH" and ln.dst.parent.resolve() == _trash_dir().resolve():
+                check.trashed_by_rule(ln)
             outcome, action = _apply_line(ln, log_path, state, now, moved, groups)
         except _Reject as why:
             tally["rejected"] += 1

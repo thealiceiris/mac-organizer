@@ -31,6 +31,7 @@ POLL_INTERVAL = 0.5
 STOP_TIMEOUT = 10.0
 REQUEST_TIMEOUT = 180.0
 PIDFILE = "llama-server.pid"
+SERVER_LOG = "llama-server.log"
 BINARY_FALLBACKS = ("/opt/homebrew/bin/llama-server", "/usr/local/bin/llama-server")
 
 
@@ -224,6 +225,48 @@ def _pid_cmdline(pid: int) -> str | None:
     return line if out.returncode == 0 and line else None
 
 
+def _is_our_llama(pid: int, model_path, pid_cmdline) -> bool:
+    """Our llama-server: the binary name *and* this model on its command line."""
+    cmd = pid_cmdline(pid)
+    return bool(cmd) and "llama-server" in cmd and str(model_path) in cmd
+
+
+def reap_stale(state_dir, model_path, pid_cmdline=None, kill=None) -> None:
+    """Stop a llama-server left behind by a SIGKILLed run (pidfile + model path match).
+
+    Without a pidfile nothing runs at all. A pid that is gone, reused by
+    another program or serving another model is never signalled.
+    """
+    pid_cmdline = pid_cmdline or _pid_cmdline
+    kill = kill or os.kill
+    pidfile = Path(state_dir) / PIDFILE
+    try:
+        pid = int(pidfile.read_text().strip())
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError):
+        pid = None
+
+    def signal_(sig):
+        try:
+            kill(pid, sig)
+        except OSError:  # already gone, or not ours to signal
+            pass
+
+    if pid is not None and pid > 1 and pid != os.getpid() \
+            and _is_our_llama(pid, model_path, pid_cmdline):
+        signal_(signal.SIGTERM)
+        deadline = time.monotonic() + STOP_TIMEOUT
+        while _is_our_llama(pid, model_path, pid_cmdline) and time.monotonic() < deadline:
+            time.sleep(POLL_INTERVAL)
+        if _is_our_llama(pid, model_path, pid_cmdline):
+            signal_(signal.SIGKILL)
+    try:
+        pidfile.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 class LlamaServer:
     """llama-server for one run. Started on enter, always stopped on exit.
 
@@ -257,11 +300,22 @@ class LlamaServer:
         self.port = self._port or _free_port()
         cmd = [_binary(), "-m", str(self.model_path), "--host", HOST, "--port", str(self.port),
                "-c", str(CONTEXT), "--reasoning", "off", "--offline", "--no-webui"]
+        out, err, log = subprocess.DEVNULL, subprocess.DEVNULL, None
+        if self._pidfile is not None:
+            # the server's own output, for diagnosing a model that will not load
+            try:
+                self._pidfile.parent.mkdir(parents=True, exist_ok=True)
+                log = open(self._pidfile.parent / SERVER_LOG, "wb")  # truncated per start
+                out, err = log, subprocess.STDOUT
+            except OSError:
+                log = None
         try:
-            self.proc = self._popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL)
+            self.proc = self._popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
         except OSError as exc:
             raise ServerUnavailable(f"cannot start llama-server: {exc}") from exc
+        finally:
+            if log is not None:
+                log.close()  # the child keeps its own copy of the descriptor
         try:
             self._write_pidfile()
             self._wait_healthy()
@@ -289,32 +343,9 @@ class LlamaServer:
             except OSError:
                 pass
 
-    def _is_llama(self, pid: int) -> bool:
-        """Our llama-server: the binary name *and* this model on its command line."""
-        cmd = self._pid_cmdline(pid)
-        return bool(cmd) and "llama-server" in cmd and str(self.model_path) in cmd
-
-    def _signal(self, pid: int, sig) -> None:
-        try:
-            self._kill(pid, sig)
-        except OSError:  # already gone, or not ours to signal
-            pass
-
     def _reap_stale(self) -> None:
-        if self._pidfile is None:
-            return
-        try:
-            pid = int(self._pidfile.read_text().strip())
-        except (OSError, ValueError):
-            pid = None
-        if pid is not None and pid > 1 and pid != os.getpid() and self._is_llama(pid):
-            self._signal(pid, signal.SIGTERM)
-            deadline = time.monotonic() + STOP_TIMEOUT
-            while self._is_llama(pid) and time.monotonic() < deadline:
-                time.sleep(POLL_INTERVAL)
-            if self._is_llama(pid):
-                self._signal(pid, signal.SIGKILL)
-        self._remove_pidfile()
+        if self._pidfile is not None:
+            reap_stale(self._pidfile.parent, self.model_path, self._pid_cmdline, self._kill)
 
     def _wait_healthy(self) -> None:
         deadline = time.monotonic() + HEALTH_TIMEOUT

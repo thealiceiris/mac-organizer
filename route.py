@@ -65,9 +65,29 @@ def _read_toml(path: Path | None) -> dict:
         return tomllib.load(fh)
 
 
+RULE_KINDS = ("file", "dir")
+
+
+def _check_rule(n: int, entry: dict) -> None:
+    """A rule that could never work fails at load, naming the rule, not every sweep."""
+    where = f"rule {n} (source = {entry.get('source')!r})"
+    kind = entry.get("kind", "file")
+    if kind not in RULE_KINDS:
+        raise ValueError(f"{where}: kind must be \"file\" or \"dir\", not {kind!r}")
+    regex = entry.get("name_regex")
+    if regex is not None:
+        if not isinstance(regex, str):
+            raise ValueError(f"{where}: name_regex must be a string")
+        try:
+            re.compile(regex)
+        except re.error as exc:
+            raise ValueError(f"{where}: name_regex {regex!r} does not compile: {exc}") from None
+
+
 def _parse_rules(data: dict) -> list[Rule]:
     rules: list[Rule] = []
-    for entry in data.get("rule", []):
+    for n, entry in enumerate(data.get("rule", []), 1):
+        _check_rule(n, entry)
         has_installer = entry.get("has_installer")
         rules.append(
             Rule(
@@ -396,6 +416,11 @@ def _call(notifier, method: str, *args) -> None:
         print(f"ERROR  notification {method} failed: {exc!r}", file=sys.stderr)
 
 
+def _folders_sorted_from(rule: Rule) -> bool:
+    """Folders are smart-sorted by the ~/Downloads rules only."""
+    return rule.source.resolve() == (Path.home() / "Downloads").resolve()
+
+
 @dataclass(frozen=True)
 class _Pick:
     folder: str | None  # candidate name; None for the rule's fallback
@@ -486,8 +511,8 @@ class SmartRouter:
         """True if routing ``path`` would certainly leave it in place without the model:
         a folder outside ~/Downloads, a cached "unsure", or an item that keeps failing.
         Cheap (a stat and in-memory lookups), so callers check it before costly work."""
-        if path.is_dir() and rule.source.resolve() != (Path.home() / "Downloads").resolve():
-            return True  # folders are sorted by the ~/Downloads rules only
+        if path.is_dir() and not _folders_sorted_from(rule):
+            return True
         st = path.stat()
         if self.failure_counter().blocked(path, st.st_size, st.st_mtime):
             return True
@@ -645,13 +670,19 @@ def _rule_reason(rule: Rule) -> str:
     return "type rule: trash" if rule.action == "trash" else f"type rule: {rule.dest}"
 
 
+PREVIEW = "SMART?"
+
+
 def plan_item(path: Path, config: Config, smart: SmartRouter | None, now: float, *,
-              source: Path | None = None, on_error=None) -> PlannedLine | None:
+              source: Path | None = None, on_error=None,
+              preview: bool = False) -> PlannedLine | None:
     """Decide where ``path`` goes, moving nothing. None means it stays.
 
     ``source`` picks whose rules apply (default: the item's own folder). A
     failure while the smart sort decides is reported through ``on_error``
     and the item is treated as unsure (its rule's fallback, or it stays).
+    Without a router, smart items stay; with ``preview`` they are returned as
+    a ``SMART?`` action whose ``dst`` is the fallback (``path`` itself: stay).
     Shared by live routing and the backlog plan so they cannot drift apart.
     """
     source = (source or path.parent).resolve()
@@ -684,7 +715,15 @@ def plan_item(path: Path, config: Config, smart: SmartRouter | None, now: float,
         action = plan_action(path, rule, now)
         return None if action is None else PlannedLine(action, rule, _rule_reason(rule))
     if smart is None:
-        return None  # without a router smart items are left in place
+        if not preview or (path.is_dir() and not _folders_sorted_from(rule)):
+            return None  # without a router smart items are left in place
+        dst = path
+        if rule.dest:
+            dest_dir = resolve_dest(rule.dest, path.stat().st_mtime)
+            if not within_home(dest_dir):
+                raise DestOutsideHome(dest_dir)
+            dst = dest_dir / path.name
+        return PlannedLine(Action(src=path, dst=dst, verb=PREVIEW), rule, "model decides")
     try:
         action = smart.route(path, rule, now)
     except DestOutsideHome:
@@ -727,10 +766,16 @@ def process_dir(
             if keep is not None and keep.holds(child):
                 continue
             line = plan_item(child, config, smart, now, source=directory,
-                             on_error=lambda exc: _item_error(child, exc, dry_run, log_path))
+                             on_error=lambda exc: _item_error(child, exc, dry_run, log_path),
+                             preview=dry_run and smart is None)
             if line is None:
                 continue
             rule = line.rule
+            if line.action.verb == PREVIEW:
+                # a dry run never starts the model: say what it would decide
+                fb = "stay" if line.action.dst == child else str(line.action.dst.parent)
+                print(f"{PREVIEW} {child} (model decides; fallback {fb})")
+                continue
             if rule.action == "smart":
                 result = _apply_smart(child, line, dry_run, log_path, smart)
             else:
@@ -859,7 +904,15 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
                 file=sys.stderr,
             )
             return 1
+        except ValueError as exc:  # a bad rule, or TOML that does not parse
+            print(f"rules not loaded, nothing moved: {exc}", file=sys.stderr)
+            return 1
         rules = config.rules
+        if not args.dry_run and config.smart.model_path is not None:
+            try:  # a server orphaned by a SIGKILLed run never outlives it by long
+                classify.reap_stale(default_state_dir(), config.smart.model_path)
+            except Exception as exc:  # noqa: BLE001 - never blocks routing
+                print(f"ERROR  reaping a stale llama-server: {exc!r}", file=sys.stderr)
         if args.apply is not None:
             return _backlog_apply(args.apply, log_path, config)
         if args.backlog:

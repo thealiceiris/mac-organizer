@@ -683,3 +683,21 @@ def test_report_header_says_vetoes_are_remembered(home, make_file):
     report = do_plan(home, FakeFactory(), "Downloads")
     header = "\n".join(ln for ln in report.read_text().splitlines() if ln.startswith("#"))
     assert "remembered" in header and "until they change" in header
+
+
+def test_hand_written_trash_of_a_downloads_pdf_is_rejected(home, make_file, capsys):
+    pdf = make_file(home / "Downloads/doc.pdf", content="d")
+    ics = make_file(home / "Downloads/invite.ics", content="i", age_seconds=2 * 86400)
+    report = do_plan(home, FakeFactory(), "Downloads")
+    assert by_src(report)["invite.ics"][0] == "TRASH"
+    rewrite(report, lambda ln: None if "doc.pdf" in ln else ln)
+    _append(report, ["TRASH", pdf, home / ".Trash/doc.pdf", "type rule: trash", ""])
+
+    done = do_apply(home, report)
+
+    assert [a.src.name for a in done] == ["invite.ics"]
+    assert pdf.exists()
+    assert (home / ".Trash/invite.ics").exists()
+    assert not (home / ".Trash/doc.pdf").exists()
+    out = capsys.readouterr().out
+    assert "REJECTED" in out and "doc.pdf" in out

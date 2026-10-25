@@ -524,3 +524,59 @@ def test_classify_http_4xx_rejects_only_this_item(tmp_path, model, fast, code):
         with pytest.raises(classify.ItemRejected, match=f"HTTP {code}") as info:
             srv.classify("Name: x.pdf", _cands(tmp_path), [], 0.6)
     assert not isinstance(info.value, classify.ServerUnavailable)
+
+
+def test_reap_stale_kills_only_our_orphan(tmp_path, model):
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / classify.PIDFILE).write_text("999\n")
+    table = FakeProcTable({999: f"llama-server -m {model}"})
+    classify.reap_stale(state, model, pid_cmdline=table.cmdline, kill=table.kill)
+    assert table.kills == [(999, signal.SIGTERM)]
+    assert not (state / classify.PIDFILE).exists()
+
+    (state / classify.PIDFILE).write_text("998\n")
+    other = FakeProcTable({998: "llama-server -m /elsewhere/other.gguf"})
+    classify.reap_stale(state, model, pid_cmdline=other.cmdline, kill=other.kill)
+    assert other.kills == []
+
+
+def test_reap_stale_without_pidfile_runs_nothing(tmp_path, model):
+    classify.reap_stale(tmp_path / "state", model,
+                        pid_cmdline=lambda pid: pytest.fail("ps was run"),
+                        kill=lambda *a: pytest.fail("kill was called"))
+
+
+def test_server_output_goes_to_a_log_truncated_per_start(tmp_path, model, fast):
+    state = tmp_path / "state"
+    state.mkdir()
+    log = state / classify.SERVER_LOG
+    log.write_text("old run\n")
+    seen = {}
+
+    class Popen(FakePopen):
+        def __call__(self, cmd, **kw):
+            seen.update(kw)
+            kw["stdout"].write(b"loading model\n")
+            kw["stdout"].flush()
+            return super().__call__(cmd, **kw)
+
+    table = FakeProcTable({})
+    with classify.LlamaServer(model, popen=Popen(), urlopen=FakeUrlopen(), state_dir=state,
+                              pid_cmdline=table.cmdline, kill=table.kill):
+        pass
+    assert seen["stderr"] == subprocess.STDOUT
+    assert log.read_text() == "loading model\n"
+
+
+def test_server_without_state_dir_discards_output(model, fast):
+    seen = {}
+
+    class Popen(FakePopen):
+        def __call__(self, cmd, **kw):
+            seen.update(kw)
+            return super().__call__(cmd, **kw)
+
+    with classify.LlamaServer(model, popen=Popen(), urlopen=FakeUrlopen()):
+        pass
+    assert seen["stdout"] == subprocess.DEVNULL

@@ -965,3 +965,30 @@ def test_rule_matches_honours_has_installer(tmp_path):
     no = route.Rule(source=tmp_path, ext=frozenset({"zip"}), action="move", dest="~/I", has_installer=False)
     assert route.rule_matches(yes, app, 0) and not route.rule_matches(yes, src, 0)
     assert route.rule_matches(no, src, 0) and not route.rule_matches(no, app, 0)
+
+
+# --- final review: rules are validated when they load ------------------------
+
+
+@pytest.mark.parametrize("body,needle", [
+    ('kind = "folder"', "kind"),
+    ('name_regex = "cv(resume"', "name_regex"),
+])
+def test_bad_rule_is_rejected_at_load_naming_the_rule(tmp_path, body, needle):
+    toml = tmp_path / "r.toml"
+    toml.write_text('[[rule]]\nsource = "~/Downloads"\naction = "move"\ndest = "~/x"\n\n'
+                    f'[[rule]]\nsource = "~/Desktop"\naction = "move"\ndest = "~/y"\n{body}\n')
+    with pytest.raises(ValueError, match=needle) as info:
+        route.load_rules(toml)
+    assert "rule 2" in str(info.value) and "Desktop" in str(info.value)
+
+
+def test_main_reports_a_bad_rule_cleanly(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    toml = tmp_path / "rules.toml"
+    toml.write_text('[[rule]]\nsource = "~/Downloads"\nkind = "folder"\naction = "smart"\n')
+    rc = route.main(["--rules", str(toml), "--log", str(tmp_path / "l.log"),
+                     "--lock", str(tmp_path / "lock")])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "rule 1" in err and "kind" in err

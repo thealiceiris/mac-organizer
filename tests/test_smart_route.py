@@ -867,3 +867,45 @@ def test_settle_walk_prunes_vendored_dirs_and_is_capped(tmp_path, make_file, mon
         os.utime(p, (time.time() - 3600,) * 2)
     assert route.dir_is_settled(d, time.time()) is True
     assert route.DIR_WALK_LIMIT == 5_000
+
+
+# ---------------------------------------------------------------- final review: cheap fixes
+
+
+def test_dry_run_previews_smart_items_without_the_model(home, make_file, capsys):
+    pdf = make_file(home / "Downloads/ngrams.pdf")
+    zf = make_file(home / "Downloads/stuff.zip")
+    make_file(home / "Downloads/project/main.py")
+    old = time.time() - 3600
+    os.utime(home / "Downloads/project", (old, old))
+    factory, notifier = FakeFactory(lambda s, n: NLP), FakeNotifier()
+
+    route.main(["--dry-run", "--rules", str(home / "rules.toml"), "--log", str(home / "actions.log"),
+                "--lock", str(home / "lock")], classifier_factory=factory, notifier=notifier)
+
+    out = capsys.readouterr().out
+    assert f"SMART? {pdf} (model decides; fallback {home / 'Documents/Inbox'})" in out
+    assert f"SMART? {zf} (model decides; fallback stay)" in out
+    assert f"SMART? {home / 'Downloads/project'} (model decides; fallback stay)" in out
+    assert pdf.exists() and zf.exists()
+    assert factory.made == 0 and notifier.calls == []
+    assert not state(home).exists()
+
+
+def test_main_reaps_a_stale_server_before_routing(home, make_file, monkeypatch):
+    make_file(home / "Downloads/photo.png")
+    events = []
+    monkeypatch.setattr(route.classify, "reap_stale",
+                        lambda st, model: events.append((st, model)))
+
+    run_main(home, FakeFactory(), FakeNotifier())
+
+    assert events == [(state(home), home / "model.gguf")]
+
+
+def test_dry_run_never_reaps(home, make_file, monkeypatch):
+    monkeypatch.setattr(route.classify, "reap_stale",
+                        lambda *a: pytest.fail("dry run reaped"))
+    route.main(["--dry-run", "--rules", str(home / "rules.toml"), "--log", str(home / "a.log"),
+                "--lock", str(home / "lock")], classifier_factory=FakeFactory(),
+               notifier=FakeNotifier())
