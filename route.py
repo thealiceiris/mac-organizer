@@ -738,8 +738,18 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
     )
     parser.add_argument("--log", type=Path, default=None)
     parser.add_argument("--lock", type=Path, default=None)
+    parser.add_argument("--backlog", action="store_true",
+                        help="plan a one-off clean-up of PATHS into a report (moves nothing)")
+    parser.add_argument("--apply", type=Path, default=None, metavar="REPORT",
+                        help="with --backlog: perform the lines left in REPORT")
     parser.add_argument("paths", nargs="*", type=Path)
     args = parser.parse_args(argv)
+    if args.apply is not None and not args.backlog:
+        parser.error("--apply works only with --backlog")
+    if args.backlog and args.apply is not None and args.paths:
+        parser.error("--backlog --apply takes only the report")
+    if args.backlog and args.apply is None and not args.paths:
+        parser.error("--backlog needs the folders to plan, e.g. ~/Documents/Inbox ~/Downloads")
 
     log_path = args.log or default_log_path()
     lock_path = args.lock or default_lock_path()
@@ -749,11 +759,17 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
     # is redundant by construction, and launchd will fire again later.
     lock_fd = acquire_lock(lock_path)
     if lock_fd is None:
+        if args.backlog:
+            print("another route.py run is already running; try the backlog again shortly",
+                  file=sys.stderr)
+            return 1
         print("another route.py run is already running; skipping this pass")
         return 0
 
     previous_sigterm = _install_sigterm()
     try:
+        if args.apply is not None:
+            return _backlog_apply(args.apply, log_path)
         try:
             config = load_config(args.rules, args.rules.parent / "rules.local.toml")
         except FileNotFoundError:
@@ -763,6 +779,8 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
             )
             return 1
         rules = config.rules
+        if args.backlog:
+            return _backlog_plan(args.paths, config, classifier_factory)
 
         # stderr only: the action log records actions, one line per action.
         for warning in cycle_warnings(rules):
@@ -803,5 +821,32 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
         os.close(lock_fd)  # releases the flock
 
 
+def _backlog_plan(paths: list[Path], config: Config, classifier_factory) -> int:
+    """Write the backlog report. Moves nothing, records nothing, never notifies."""
+    import backlog
+
+    router = SmartRouter(config.smart, default_state_dir(),
+                         classifier_factory or classify.LlamaServer, NullNotifier(),
+                         read_only=True)
+    try:
+        backlog.plan(paths, config, router, time.time())
+    finally:
+        router.close()  # the model is never left running
+    return 0
+
+
+def _backlog_apply(report: Path, log_path: Path) -> int:
+    import backlog
+
+    try:
+        backlog.apply(report, log_path)
+    except (OSError, ValueError) as exc:  # unreadable or invalid report: nothing applied
+        print(f"report not applied, nothing moved: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
 if __name__ == "__main__":
+    # backlog.py imports this module as ``route``: share this instance with it
+    sys.modules.setdefault("route", sys.modules[__name__])
     raise SystemExit(main())

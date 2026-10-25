@@ -22,6 +22,7 @@ REPO_FILES = [
     "classify.py",
     "memory.py",
     "batch.py",
+    "backlog.py",
     "notify.py",
     "disks.py",
     "plist.py",
