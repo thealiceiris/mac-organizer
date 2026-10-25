@@ -6,8 +6,11 @@ process this module starts with ``--host 127.0.0.1`` and always stops.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
+import os
 import shutil
+import signal
 import socket
 import subprocess
 import time
@@ -27,6 +30,7 @@ HEALTH_TIMEOUT = 120.0
 POLL_INTERVAL = 0.5
 STOP_TIMEOUT = 10.0
 REQUEST_TIMEOUT = 180.0
+PIDFILE = "llama-server.pid"
 BINARY_FALLBACKS = ("/opt/homebrew/bin/llama-server", "/usr/local/bin/llama-server")
 
 
@@ -205,12 +209,36 @@ def _binary() -> str:
     return "llama-server"
 
 
+def _pid_cmdline(pid: int) -> str | None:
+    """Command line of a live process, or None if there is no such process."""
+    try:
+        out = subprocess.run(["ps", "-p", str(int(pid)), "-o", "command="],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    line = out.stdout.strip()
+    return line if out.returncode == 0 and line else None
+
+
 class LlamaServer:
-    def __init__(self, model_path, popen=subprocess.Popen, urlopen=_direct_urlopen, port=None):
+    """llama-server for one run. Started on enter, always stopped on exit.
+
+    With ``state_dir``, the server's pid is kept in ``<state_dir>/llama-server.pid``
+    while it runs. A pidfile left behind by a run that was SIGKILLed names an
+    orphan: if that pid is still a ``llama-server`` it is terminated before a new
+    server starts. ``pid_cmdline`` and ``kill`` are injectable so tests never
+    touch real processes.
+    """
+
+    def __init__(self, model_path, popen=subprocess.Popen, urlopen=_direct_urlopen, port=None,
+                 state_dir=None, pid_cmdline=_pid_cmdline, kill=os.kill):
         self.model_path = Path(model_path) if model_path is not None else None
         self._popen = popen
         self._urlopen = urlopen
         self._port = port
+        self._pidfile = Path(state_dir) / PIDFILE if state_dir is not None else None
+        self._pid_cmdline = pid_cmdline
+        self._kill = kill
         self.port: int | None = None
         self.proc = None
 
@@ -221,6 +249,7 @@ class LlamaServer:
     def __enter__(self) -> "LlamaServer":
         if self.model_path is None or not self.model_path.is_file():
             raise ServerUnavailable(f"model not found: {self.model_path}")
+        self._reap_stale()
         self.port = self._port or _free_port()
         cmd = [_binary(), "-m", str(self.model_path), "--host", HOST, "--port", str(self.port),
                "-c", str(CONTEXT), "--reasoning", "off", "--offline", "--no-webui"]
@@ -230,6 +259,7 @@ class LlamaServer:
         except OSError as exc:
             raise ServerUnavailable(f"cannot start llama-server: {exc}") from exc
         try:
+            self._write_pidfile()
             self._wait_healthy()
         except BaseException:
             self._stop()
@@ -238,6 +268,48 @@ class LlamaServer:
 
     def __exit__(self, *exc) -> None:
         self._stop()
+
+    # -- pidfile: the model is never left running, even after a SIGKILL
+
+    def _write_pidfile(self) -> None:
+        pid = getattr(self.proc, "pid", None)
+        if self._pidfile is None or pid is None:
+            return
+        self._pidfile.parent.mkdir(parents=True, exist_ok=True)
+        self._pidfile.write_text(f"{pid}\n")
+
+    def _remove_pidfile(self) -> None:
+        if self._pidfile is not None:
+            try:
+                self._pidfile.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _is_llama(self, pid: int) -> bool:
+        cmd = self._pid_cmdline(pid)
+        return bool(cmd) and "llama-server" in cmd
+
+    def _signal(self, pid: int, sig) -> None:
+        try:
+            self._kill(pid, sig)
+        except OSError:  # already gone, or not ours to signal
+            pass
+
+    def _reap_stale(self) -> None:
+        if self._pidfile is None:
+            return
+        try:
+            pid = int(self._pidfile.read_text().strip())
+        except (OSError, ValueError):
+            pid = None
+        if pid is not None and pid > 1 and pid != os.getpid() and self._is_llama(pid):
+            self._signal(pid, signal.SIGTERM)
+            deadline = time.monotonic() + STOP_TIMEOUT
+            while self._is_llama(pid) and time.monotonic() < deadline:
+                time.sleep(POLL_INTERVAL)
+            if self._is_llama(pid):
+                self._signal(pid, signal.SIGKILL)
+        self._remove_pidfile()
 
     def _wait_healthy(self) -> None:
         deadline = time.monotonic() + HEALTH_TIMEOUT
@@ -252,23 +324,27 @@ class LlamaServer:
                         return
             except (urllib.error.URLError, OSError):
                 pass  # still loading (503) or not listening yet
+            except http.client.HTTPException as exc:  # garbled reply: not a llama-server we can use
+                raise ServerUnavailable(f"llama-server health check failed: {exc!r}") from exc
             if time.monotonic() >= deadline:
                 raise ServerUnavailable(f"llama-server not healthy after {HEALTH_TIMEOUT:g}s")
             time.sleep(POLL_INTERVAL)
 
     def _stop(self) -> None:
         proc, self.proc = self.proc, None
-        if proc is None or proc.poll() is not None:
+        if proc is None:
             return
-        proc.terminate()
-        try:
-            proc.wait(timeout=STOP_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        if proc.poll() is None:
+            proc.terminate()
             try:
                 proc.wait(timeout=STOP_TIMEOUT)
             except subprocess.TimeoutExpired:
-                pass
+                proc.kill()
+                try:
+                    proc.wait(timeout=STOP_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    return  # still alive: keep the pidfile so the next run reaps it
+        self._remove_pidfile()
 
     def classify(self, sample: str, cands, examples, threshold: float) -> Verdict:
         if self.proc is None or self.proc.poll() is not None:
@@ -283,6 +359,8 @@ class LlamaServer:
             return _unsure(f"llama-server HTTP {exc.code}")
         except (urllib.error.URLError, OSError) as exc:
             raise ServerUnavailable(f"llama-server request failed: {exc}") from exc
+        except http.client.HTTPException as exc:  # IncompleteRead, BadStatusLine, ...
+            raise ServerUnavailable(f"llama-server response broken: {exc!r}") from exc
         try:
             body = json.loads(raw)
         except ValueError:

@@ -1,4 +1,7 @@
+import http.client
 import http.server
+import os
+import signal
 import io
 import json
 import subprocess
@@ -36,6 +39,7 @@ def _cands(tmp_path):
 class FakeProc:
     def __init__(self, cmd, exit_code=None, ignore_terminate=False):
         self.cmd = cmd
+        self.pid = 4242
         self.returncode = exit_code
         self.ignore_terminate = ignore_terminate
         self.terminated = False
@@ -405,3 +409,105 @@ def test_classify_non_json_response_is_unsure(tmp_path, model, fast):
             return FakeResponse(b"<html>nope</html>")
     with classify.LlamaServer(model, popen=FakePopen(), urlopen=Fake()) as srv:
         assert srv.classify("Name: x.pdf", _cands(tmp_path), [], 0.6).folder is None
+
+
+# ---------------------------------------------------------------- ruling 9: http.client errors
+
+
+def test_classify_incomplete_read_raises_unavailable(tmp_path, model, fast):
+    fake = FakeUrlopen(chat=http.client.IncompleteRead(b"{\"cho", 100))
+    with classify.LlamaServer(model, popen=FakePopen(), urlopen=fake) as srv:
+        with pytest.raises(classify.ServerUnavailable):
+            srv.classify("Name: x.pdf", _cands(tmp_path), [], 0.6)
+
+
+def test_health_bad_status_line_raises_unavailable_and_stops(model, fast):
+    popen = FakePopen()
+    with pytest.raises(classify.ServerUnavailable):
+        with classify.LlamaServer(model, popen=popen,
+                                  urlopen=FakeUrlopen(health=http.client.BadStatusLine("x"))):
+            pass
+    assert popen.procs[0].terminated
+
+
+# ---------------------------------------------------------------- ruling 10b: pidfile, stale orphans
+
+
+class FakeProcTable:
+    """Injectable process inspection/kill: never touches real processes."""
+
+    def __init__(self, procs, ignore_term=()):
+        self.procs = dict(procs)
+        self.ignore_term = set(ignore_term)
+        self.kills = []
+
+    def cmdline(self, pid):
+        return self.procs.get(pid)
+
+    def kill(self, pid, sig):
+        self.kills.append((pid, sig))
+        if sig == signal.SIGKILL or pid not in self.ignore_term:
+            self.procs.pop(pid, None)
+
+
+def _server(model, tmp_path, table, **kw):
+    return classify.LlamaServer(model, popen=FakePopen(), urlopen=FakeUrlopen(),
+                                state_dir=tmp_path / "state", pid_cmdline=table.cmdline,
+                                kill=table.kill, **kw)
+
+
+def test_server_writes_pidfile_and_removes_it_on_stop(tmp_path, model, fast):
+    table = FakeProcTable({})
+    pidfile = tmp_path / "state" / classify.PIDFILE
+    with _server(model, tmp_path, table):
+        assert pidfile.read_text().strip() == "4242"
+    assert not pidfile.exists()
+    assert table.kills == []
+
+
+def test_server_terminates_stale_llama_server_from_pidfile(tmp_path, model, fast):
+    pidfile = tmp_path / "state" / classify.PIDFILE
+    pidfile.parent.mkdir()
+    pidfile.write_text("999\n")
+    table = FakeProcTable({999: "/opt/homebrew/bin/llama-server -m x.gguf --host 127.0.0.1"})
+    with _server(model, tmp_path, table):
+        assert pidfile.read_text().strip() == "4242"
+    assert table.kills == [(999, signal.SIGTERM)]
+
+
+def test_server_kills_stale_orphan_that_ignores_term(tmp_path, model, fast):
+    pidfile = tmp_path / "state" / classify.PIDFILE
+    pidfile.parent.mkdir()
+    pidfile.write_text("999")
+    table = FakeProcTable({999: "llama-server -m x"}, ignore_term={999})
+    with _server(model, tmp_path, table):
+        pass
+    assert table.kills == [(999, signal.SIGTERM), (999, signal.SIGKILL)]
+
+
+@pytest.mark.parametrize("content,procs", [
+    ("999", {999: "/usr/bin/vim notes.txt"}),  # pid reused by something else
+    ("999", {}),                               # already dead
+    ("garbage", {}),                           # unreadable pidfile
+])
+def test_server_never_kills_unrelated_or_dead_pid(tmp_path, model, fast, content, procs):
+    pidfile = tmp_path / "state" / classify.PIDFILE
+    pidfile.parent.mkdir()
+    pidfile.write_text(content)
+    table = FakeProcTable(procs)
+    with _server(model, tmp_path, table):
+        assert pidfile.read_text().strip() == "4242"
+    assert table.kills == []
+
+
+def test_server_missing_model_never_reaps_or_writes_pidfile(tmp_path, fast):
+    table = FakeProcTable({})
+    with pytest.raises(classify.ServerUnavailable):
+        with _server(tmp_path / "nope.gguf", tmp_path, table):
+            pass
+    assert not (tmp_path / "state" / classify.PIDFILE).exists()
+
+
+def test_pid_cmdline_reads_live_and_dead_processes():
+    assert "python" in classify._pid_cmdline(os.getpid()).lower()
+    assert classify._pid_cmdline(2 ** 22 + 12345) is None

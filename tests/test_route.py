@@ -555,7 +555,7 @@ def test_default_table_routes_end_to_end(tmp_path, make_file, monkeypatch):
     # second hop: ~/Desktop drops into ~/Inbox, which routes on the next pass
     route.process_dir(tmp_path / "Inbox", rules, now, False, log)
 
-    # pdfs are "smart" items: left in place until the smart sort lands (Task 7)
+    # pdfs are "smart" items: process_dir without a SmartRouter leaves them in place
     assert (tmp_path / "Inbox/invoice.pdf").exists()
     assert (tmp_path / "Notes/00-Inbox/notes.md").exists()
     assert (tmp_path / "Media/Screenshots/2026-03/2026-03-09_14-05-06.png").exists()

@@ -7,16 +7,21 @@ import fcntl
 import fnmatch
 import os
 import re
+import signal
 import sys
+import threading
 import time
 import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import classify
 import dedupe as dupes
 import extract
 import fsops
+import memory
+from batch import Batch, NullNotifier
 from fsops import candidate_names, move_no_clobber  # noqa: F401  (re-exported)
 
 
@@ -347,6 +352,10 @@ def default_lock_path() -> Path:
     return Path("~/.local/state/mac-organizer/route.lock").expanduser()
 
 
+def default_state_dir() -> Path:
+    return Path("~/.local/state/mac-organizer").expanduser()
+
+
 def acquire_lock(path: Path):
     """Take the single-instance lock. Returns an open fd, or None if held.
 
@@ -363,12 +372,177 @@ def acquire_lock(path: Path):
     return fd
 
 
+SUMMARY_CHARS = 300
+UNAVAILABLE_STAMP = "unavailable-notified"
+UNAVAILABLE_EVERY = 86400.0
+
+
+def _call(notifier, method: str, *args) -> None:
+    """Notifications are best-effort: they never break routing."""
+    try:
+        getattr(notifier, method)(*args)
+    except Exception as exc:  # noqa: BLE001
+        print(f"ERROR  notification {method} failed: {exc!r}", file=sys.stderr)
+
+
+@dataclass(frozen=True)
+class _Pick:
+    folder: str | None  # candidate name; None for the rule's fallback
+    reason: str
+    summary: str
+
+
+class SmartRouter:
+    """Decides where ``smart`` items go, starting the model at most once per run.
+
+    A cached "unsure" verdict leaves the item in place without starting the
+    model. Once the model is unavailable (disabled, missing, failed to start or
+    died mid-run) every later item is treated as unsure and is not cached.
+    """
+
+    def __init__(self, settings: SmartSettings, state: Path,
+                 classifier_factory=classify.LlamaServer, notifier=None):
+        self.settings = settings
+        self.state = Path(state)
+        self.factory = classifier_factory
+        self.notifier = notifier if notifier is not None else NullNotifier()
+        self.batch = Batch()
+        model = settings.model_path
+        self.permanent = not settings.enabled or model is None or not model.is_file()
+        self._down = self.permanent
+        self._server = None
+        self._ctx = None
+        self._cands = None
+        self._cache = None
+        self._corrections = 0
+        self._picks: dict[Path, _Pick] = {}
+
+    def candidates(self) -> list:
+        if self._cands is None:
+            self._cands = classify.candidates(self.settings.documents_root)
+        return self._cands
+
+    def _verdict_cache(self):
+        if self._cache is None:
+            self._cache = memory.VerdictCache(self.state)
+            self._corrections = memory.corrections_count(self.state)
+        return self._cache
+
+    def _cache_key(self, path: Path):
+        st = path.stat()
+        return (path, st.st_size, st.st_mtime,
+                classify.candidates_hash(self.candidates()), self._corrections)
+
+    def _unavailable(self, exc: BaseException) -> None:
+        print(f"ERROR  smart sort unavailable: {exc}", file=sys.stderr)
+        self._down = True
+        self.batch.ai_unavailable = True
+        self.close()
+
+    def _ensure_server(self):
+        if self._server is None and not self._down:
+            _call(self.notifier, "start")
+            try:
+                ctx = self.factory(self.settings.model_path, state_dir=self.state)
+                self._server = ctx.__enter__()
+                self._ctx = ctx
+            except (classify.ServerUnavailable, OSError) as exc:
+                self._unavailable(exc)
+        return self._server
+
+    def _verdict(self, path: Path, sample: str):
+        """A Verdict, or None if the model is unavailable for this item."""
+        server = self._ensure_server()
+        if server is None:
+            return None
+        examples = memory.select_examples(self.state, path.name)
+        try:
+            return server.classify(sample, self.candidates(), examples, self.settings.threshold)
+        except classify.ServerUnavailable as exc:
+            self._unavailable(exc)
+            return None
+
+    def route(self, path: Path, rule: Rule, now: float) -> Action | None:
+        if path.is_dir() and path.parent.resolve() != (Path.home() / "Downloads").resolve():
+            return None  # folders are sorted from ~/Downloads only
+        cache = self._verdict_cache()
+        key = self._cache_key(path)
+        if cache.get(*key):
+            return None
+        if self._down:
+            self.batch.ai_unavailable = True
+            verdict, sample = None, ""
+        else:
+            sample = extract.sample(path)
+            verdict = self._verdict(path, sample)
+        summary = sample[:SUMMARY_CHARS]
+        if verdict is not None and verdict.folder is not None:
+            cand = next((c for c in self.candidates() if c.name == verdict.folder), None)
+            # never create a folder: the candidate must still exist right now
+            if cand is not None and cand.path.is_dir() and within_home(cand.path):
+                self._picks[path] = _Pick(cand.name, verdict.reason, summary)
+                return Action(src=path, dst=cand.path / path.name, verb="SMART")
+        reason = verdict.reason if verdict is not None else "AI sorting unavailable"
+        if rule.dest:
+            dest_dir = resolve_dest(rule.dest, path.stat().st_mtime)
+            if not within_home(dest_dir):
+                raise DestOutsideHome(dest_dir)
+            self._picks[path] = _Pick(None, reason, summary)
+            return Action(src=path, dst=dest_dir / path.name)
+        if verdict is not None:  # a real "unsure", not an outage
+            cache.put_unsure(*key)
+        self.batch.add(path, path, None, "stay", reason, smart=True)
+        return None
+
+    def record(self, rule: Rule, done: Action, now: float) -> None:
+        """Book a performed action into the batch (and placements for smart moves)."""
+        if rule.action != "smart":
+            self.batch.add(done.src, done.dst, None, "duplicate" if done.duplicate else "rule")
+            return
+        pick = self._picks.pop(done.src, _Pick(None, "", ""))
+        if done.duplicate:
+            self.batch.add(done.src, done.dst, pick.folder, "duplicate", pick.reason, smart=True)
+        elif pick.folder is not None:
+            memory.record_placement(self.state, done.dst, pick.folder, pick.summary, now)
+            self.batch.add(done.src, done.dst, pick.folder, "smart", pick.reason, smart=True)
+        else:
+            self.batch.add(done.src, done.dst, None, "inbox", pick.reason, smart=True)
+
+    def close(self) -> None:
+        ctx, self._ctx, self._server = self._ctx, None, None
+        if ctx is not None:
+            ctx.__exit__(None, None, None)
+
+    def finish(self, now: float) -> None:
+        """End-of-run notification: a summary, or a daily 'AI unavailable' notice."""
+        if self.batch.notable:
+            _call(self.notifier, "summary", self.batch)
+        elif self.batch.ai_unavailable and self._unavailable_notice_due(now):
+            _call(self.notifier, "unavailable")
+
+    def _unavailable_notice_due(self, now: float) -> bool:
+        stamp = self.state / UNAVAILABLE_STAMP
+        try:
+            last = float(stamp.read_text().strip())
+        except (OSError, ValueError):
+            last = None
+        if last is not None and now - last < UNAVAILABLE_EVERY:
+            return False
+        try:
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            stamp.write_text(f"{now}\n")
+        except OSError:
+            pass
+        return True
+
+
 def process_dir(
     directory: Path,
     rules: list[Rule],
     now: float,
     dry_run: bool,
     log_path: Path,
+    smart: SmartRouter | None = None,
 ) -> list[Action]:
     dir_rules = [r for r in rules if r.source.resolve() == directory.resolve()]
     has_dir_rules = any(r.kind == "dir" for r in dir_rules)
@@ -392,13 +566,21 @@ def process_dir(
             if should_skip(child, now):
                 continue
             rule = match_rule(child, dir_rules, now)
-            if rule is None or rule.action == "smart":
-                continue  # smart sorting arrives in a later task
-            action = plan_action(child, rule, now)
+            if rule is None:
+                continue
+            if rule.action == "smart":
+                # Without a router (dry run, or a caller that predates smart
+                # sorting) smart items are left in place.
+                action = smart.route(child, rule, now) if smart is not None else None
+            else:
+                action = plan_action(child, rule, now)
             if action is None:
                 continue
             intended = action.dst
-            done.append(apply_action(action, dry_run, log_path))
+            result = apply_action(action, dry_run, log_path)
+            done.append(result)
+            if smart is not None:
+                smart.record(rule, result, now)
         except DestOutsideHome as exc:
             # Configuration error: it would repeat on every run, so it is
             # reported once per run to stderr and kept out of the action log
@@ -415,7 +597,22 @@ def process_dir(
     return done
 
 
-def main(argv: list[str] | None = None) -> int:
+def _raise_exit(signum, frame):
+    raise SystemExit(128 + signum)
+
+
+def _install_sigterm():
+    """launchd stops a job with SIGTERM: turn it into SystemExit so cleanup runs.
+
+    Returns the previous handler, or None when not on the main thread (signal
+    handlers can only be set there).
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return None
+    return signal.signal(signal.SIGTERM, _raise_exit)
+
+
+def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=None) -> int:
     parser = argparse.ArgumentParser(description="Route files in drop-zone folders.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
@@ -439,15 +636,17 @@ def main(argv: list[str] | None = None) -> int:
         print("another route.py run is already running; skipping this pass")
         return 0
 
+    previous_sigterm = _install_sigterm()
     try:
         try:
-            rules = load_config(args.rules, args.rules.parent / "rules.local.toml").rules
+            config = load_config(args.rules, args.rules.parent / "rules.local.toml")
         except FileNotFoundError:
             print(
                 f"rules file not found at {args.rules} — run ./install.sh first",
                 file=sys.stderr,
             )
             return 1
+        rules = config.rules
 
         # stderr only: the action log records actions, one line per action.
         for warning in cycle_warnings(rules):
@@ -455,12 +654,30 @@ def main(argv: list[str] | None = None) -> int:
 
         targets = args.paths or sources(rules)
         now = time.time()
-        for target in targets:
-            directory = target.expanduser()
-            if directory.is_dir():
-                process_dir(directory, rules, now, args.dry_run, log_path)
+        router = None
+        if not args.dry_run:
+            # A dry run never starts the model, writes state or notifies.
+            state = default_state_dir()
+            router = SmartRouter(config.smart, state,
+                                 classifier_factory or classify.LlamaServer, notifier)
+            try:
+                memory.detect_corrections(state, router.candidates(), now)
+            except OSError as exc:
+                print(f"ERROR  detecting corrections: {exc}", file=sys.stderr)
+        try:
+            for target in targets:
+                directory = target.expanduser()
+                if directory.is_dir():
+                    process_dir(directory, rules, now, args.dry_run, log_path, smart=router)
+        finally:
+            if router is not None:
+                router.close()  # the model is never left running
+        if router is not None:
+            router.finish(now)
         return 0
     finally:
+        if previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm)
         os.close(lock_fd)  # releases the flock
 
 
