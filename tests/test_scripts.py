@@ -221,3 +221,15 @@ def test_install_lists_only_missing_tools(env):
     assert result.returncode == 0, result.stderr
     assert "brew install terminal-notifier" in out
     assert "poppler" not in out and "llama.cpp" not in out
+
+
+def test_install_warns_about_missing_tools_before_setup(env):
+    only = _fake_python_bin(env)
+    env["vars"]["LAUNCHCTL"] = str(_launchctl_stub(env["bin_dir"]))
+    env["vars"]["PATH"] = f"{only}:/usr/bin:/bin"
+    env["vars"]["MAC_ORGANIZER_TOOL_DIRS"] = str(env["bin_dir"] / "nowhere")
+
+    result = _run(env["repo"] / "install.sh", env)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.index("brew install") < result.stdout.index("screenshot dir:")

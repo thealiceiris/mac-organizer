@@ -29,18 +29,21 @@ cd ~/.mac-organizer
 
 `install.sh`:
 
-1. Runs `setup.py`, which creates `~/Inbox`, `~/Media/Images`,
+1. Warns, with one `brew install ...` line, about any missing external tools
+   (before anything is set up; a missing tool never stops the install).
+   (launchd's `PATH` lacks Homebrew, so the check also looks in
+   `/opt/homebrew/bin` and `/usr/local/bin`.)
+2. Runs `setup.py`, which creates `~/Inbox`, `~/Media/Images`,
    `~/Media/Screenshots`, `~/Documents/Inbox`, `~/Downloads/Installers`, and
    the state directory; detects your screenshot location; generates
    `rules.toml` and a personal `rules.local.toml`; installs the `launchd`
    agents (one per watched folder plus a 10-minute sweep — five, or four when
    your screenshots already land in a watched folder); and copies the Obsidian vault template to `~/Notes`
    (never overwriting existing files).
-2. Loads the agents with `launchctl`.
-3. Warns, with one `brew install ...` line, about any missing external tools.
-   (launchd's `PATH` lacks Homebrew, so the check also looks in
-   `/opt/homebrew/bin` and `/usr/local/bin`.)
-4. Prints a dry-run preview of what the router would do right now.
+3. Loads the agents with `launchctl`.
+4. Prints a dry-run preview of what the router would do right now (smart-sort
+   items show as `SMART? <file> (model decides; fallback ...)`: the preview
+   never starts the model).
 
 Then set `model_path` in `~/.mac-organizer/rules.local.toml` (see "Changing the
 model"); until you do, smart sort is off and documents wait in the Inbox.
@@ -70,7 +73,7 @@ Defaults:
 | `~/Downloads` only | folders | `.app` bundles to Installers, the rest smart sort |
 
 Archives are opened (read-only, never extracted to disk) to see whether they
-hold an installer or code. Anything not matched is left alone. Files are never
+hold an installer. Anything not matched is left alone. Files are never
 overwritten (name collisions get a ` -2` suffix); the only things ever deleted
 are byte-identical duplicates and old `.ics` files, and both go to the Trash,
 not oblivion. Files newer than 60 seconds and partial downloads (`.crdownload`,
@@ -80,7 +83,8 @@ only.
 ## Smart sort
 
 For documents, archives, code and folders, a local model reads a sample of the
-content and picks the best existing folder. The candidates are the top-level
+content (for an archive, the names inside it; for a folder, up to 200 of its
+paths and a few documents near its top) and picks the best existing folder. The candidates are the top-level
 folders of `~/Documents` (except `Inbox` and `Keys`) plus the folders one level
 inside `~/Documents/Academics` if you have one. **It never creates folders**:
 if the model is unsure (confidence below the `threshold`, default 0.6), or no
@@ -113,7 +117,8 @@ next batch uses it. To check that a model behaves, run the opt-in live test,
 which starts the real server and classifies a few sample documents:
 
 ```bash
-MAC_ORGANIZER_LIVE=1 python3 -m pytest tests/test_classify_live.py -q -s
+MAC_ORGANIZER_LIVE=1 MAC_ORGANIZER_MODEL=~/models/your-model.gguf \
+  python3 -m pytest tests/test_classify_live.py -q -s
 ```
 
 Smaller models are faster; larger ones are more accurate on ambiguous files.
@@ -125,17 +130,26 @@ Trash instead of being stored again (and logged).
 
 ## Notifications
 
-You get a notification when a smart-sort batch starts and a summary when it
-ends. With `terminal-notifier` installed, clicking the summary opens a report
+You get a notification when the model starts on a batch and a summary when it
+ends (also when smart-sorted items moved without the model, e.g. to the
+Inbox). With `terminal-notifier` installed, clicking the summary opens a report
 of what went where; without it, mac-organizer falls back to macOS's built-in
-`osascript display notification` (not clickable). Batches handled purely by rules are silent. If the model
-cannot be started you get one notice saying files will wait in the Inbox.
+`osascript display notification` (not clickable). Batches handled purely by
+rules are silent.
+
+"Files are being sorted…" is sent only once the model has started; a run that
+sent it always ends with a summary. If the model cannot be started (or its
+file is missing), you get at most one notice a day saying files will wait in
+the Inbox, and a model that failed to start is not tried again for 24 hours.
+An item the model fails on three sweeps in a row is left where it is until it
+changes. `llama-server`'s own output from the last start is in
+`~/.local/state/mac-organizer/llama-server.log`.
 
 ## Learning from your corrections
 
 If you move a sorted file to a different folder in Finder, mac-organizer
-notices (within a 30-day window) and remembers. Similar past corrections and
-placements are shown to the model as examples on later runs. "Unsure" verdicts
+notices (within a 30-day window) and remembers. Similar past corrections are
+shown to the model as examples on later runs. "Unsure" verdicts
 are cached too, so a file the model could not place is not re-classified on
 every sweep; that cache is dropped when the set of candidate folders changes or
 you make a new correction. This memory lives in
@@ -165,19 +179,50 @@ python3 ~/.mac-organizer/route.py --backlog --apply ~/.local/state/mac-organizer
 
 Each remaining line is validated again before it runs; malformed lines abort
 the apply, and files that changed since the plan was made are skipped.
+Vetoed lines for items in `~/Downloads` are remembered: the regular sorting
+leaves those items alone until they change.
 
 ## Upgrading from v1
 
-Re-running `./install.sh` after upgrading backs up your existing `rules.toml` to
-`rules.toml.v1.bak` and generates the v2 rules. Re-apply your own edits through
-`rules.local.toml`.
+Do the first v2 clean-up as a reviewed backlog, with the agents stopped so
+nothing moves behind your back (do it in one session: the agents written in
+step 2 would load at your next login):
+
+1. Stop the v1 agents: `./uninstall.sh` (your files and rules stay).
+2. Run `python3 setup.py`. It backs up your existing `rules.toml` to
+   `rules.toml.v1.bak`, generates the v2 rules and a `rules.local.toml`
+   (it writes the agents but does not load them). Re-apply your own edits
+   through `rules.local.toml`.
+3. Set `model_path` under `[smart_sort]` in `rules.local.toml`.
+4. Plan the backlog, review the report, then apply it:
+   `python3 route.py --backlog ~/Documents/Inbox ~/Downloads`, then
+   `python3 route.py --backlog --apply <report>` (see "Cleaning up a backlog").
+5. Load the agents: `./install.sh`.
 
 ## Changing the rules
 
-Edit `~/.mac-organizer/rules.toml`. Each `[[rule]]` has a `source` folder, an
-`action` (`move`, `move_and_timestamp`, or `skip`), a `dest`, and optional
-`ext`, `glob`, and `min_age_seconds` filters. Rules are evaluated top to
-bottom per source folder; the first match wins.
+Edit `~/.mac-organizer/rules.toml` (or add rules to `rules.local.toml`, which
+are evaluated first). Each `[[rule]]` has a `source` folder and an `action`:
+
+- `move`: move to `dest`;
+- `move_and_timestamp`: move to `dest`, renamed to its date and time;
+- `trash`: move to the Trash (no `dest`);
+- `smart`: let the model pick a folder in `~/Documents`; `dest` is the
+  fallback when it is unsure (`dest = ""`: the item stays where it is);
+- `skip`: leave matching items alone (shadows later rules).
+
+Optional filters, all of which must match:
+
+- `ext`: list of extensions; `glob`: a name pattern; `min_age_seconds`;
+- `kind`: `"file"` (default) or `"dir"` for folders (folders are handled in
+  `~/Downloads`, and `.app` bundles on the Desktop); symlinks never match;
+- `name_regex`: a case-insensitive regular expression searched in the name;
+- `has_installer`: `true`/`false`, for archives: whether one holds an `.app`,
+  `.pkg`, `.dmg`, `.exe` or `.msi`.
+
+Rules are evaluated top to bottom per source folder; the first match wins. A
+rule with an unknown `kind` or a `name_regex` that does not compile is
+reported when the rules load (naming the rule) and nothing is moved.
 
 Changing the filters or the `dest` of a rule needs no restart — the next run
 picks up the changes. **Adding a rule with a new `source` folder does need

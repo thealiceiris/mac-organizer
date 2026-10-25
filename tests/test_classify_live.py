@@ -1,6 +1,8 @@
-"""Opt-in end-to-end test against the real llama-server and default model.
+"""Opt-in end-to-end test against the real llama-server and your model.
 
-Run by hand: MAC_ORGANIZER_LIVE=1 .venv/bin/python -m pytest tests/test_classify_live.py -q -s
+Run by hand:
+  MAC_ORGANIZER_LIVE=1 MAC_ORGANIZER_MODEL=~/models/your-model.gguf \
+    .venv/bin/python -m pytest tests/test_classify_live.py -q -s
 It lists folder and file NAMES under ~/Documents (no file is opened) and
 classifies a synthetic sample written here.
 """
@@ -12,11 +14,15 @@ import pytest
 
 import classify
 
-MODEL = Path("~/Library/Application Support/Orb/models/gguf/google_gemma-4-E4B-it-Q4_K_M.gguf").expanduser()
+MODEL_ENV = os.environ.get("MAC_ORGANIZER_MODEL", "")
+MODEL = Path(MODEL_ENV).expanduser() if MODEL_ENV else None
 TARGET = "Academics/Cyber Security Essentials"
 
-pytestmark = pytest.mark.skipif(os.environ.get("MAC_ORGANIZER_LIVE") != "1",
-                                reason="set MAC_ORGANIZER_LIVE=1 to run the real model")
+pytestmark = [
+    pytest.mark.skipif(os.environ.get("MAC_ORGANIZER_LIVE") != "1",
+                       reason="set MAC_ORGANIZER_LIVE=1 to run the real model"),
+    pytest.mark.skipif(MODEL is None, reason="set MAC_ORGANIZER_MODEL to the GGUF model to test"),
+]
 
 SAMPLE = """Name: ICS570_lab3_report.pdf
 ICS 570 Cyber Security Essentials - Lab 3: OpenPGP
