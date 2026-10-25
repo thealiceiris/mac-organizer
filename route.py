@@ -169,8 +169,7 @@ DIR_QUIET_SECONDS = 300
 DIR_WALK_LIMIT = 5_000
 SKIP_SUFFIXES = frozenset({".crdownload", ".part", ".download", ".tmp"})
 # tool-managed trees: never walked into (their own entry is still checked)
-VENDORED_DIRS = frozenset({"node_modules", ".git", ".venv", "venv", "__pycache__", "build",
-                           "dist", ".next"})
+VENDORED_DIRS = extract.VENDORED_DIRS
 
 
 def _age_seconds(path: Path, now: float) -> float:

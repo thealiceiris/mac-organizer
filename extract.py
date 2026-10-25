@@ -7,10 +7,15 @@ import re
 import subprocess
 import tarfile
 import zipfile
+from collections import deque
 from pathlib import Path
 
 TIMEOUT = 60
 MAX_MEMBERS = 200
+MAX_DOCS = 3
+MAX_DOC_SEARCH = 2_000  # entries looked at in a folder item, in all
+VENDORED_DIRS = frozenset({"node_modules", ".git", ".venv", "venv", "__pycache__", "build",
+                           "dist", ".next"})
 MAX_XML_BYTES = 4 * 1024 * 1024
 MAX_NOTEBOOK_BYTES = 8 * 1024 * 1024
 MAX_CODE_BYTES = 64 * 1024
@@ -86,23 +91,41 @@ def _members(path: Path, ext: str) -> list[str]:
 
 
 def _dir(path: Path, runner) -> str:
+    """Up to MAX_MEMBERS paths plus the text of up to MAX_DOCS documents.
+
+    Breadth first, so the documents nearest the top win; vendored trees
+    (node_modules, .git, build output, …) are listed but never walked into, and
+    at most MAX_DOC_SEARCH entries are looked at in all.
+    """
     rels: list[str] = []
     docs: list[Path] = []
-    for root, dirnames, filenames in os.walk(path):
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
-        base = Path(root)
-        for name in dirnames:
-            if len(rels) < MAX_MEMBERS:
-                rels.append(str((base / name).relative_to(path)) + "/")
-        for name in sorted(filenames):
-            if name.startswith("."):
+    queue = deque([path])
+    seen = 0
+    while queue and seen < MAX_DOC_SEARCH:
+        batch = []
+        with os.scandir(queue.popleft()) as it:
+            for entry in it:
+                batch.append(entry)
+                seen += 1
+                if seen >= MAX_DOC_SEARCH:
+                    break
+        batch.sort(key=lambda e: e.name)
+        for entry in batch:
+            if entry.name.startswith("."):
                 continue
-            p = base / name
+            rel = os.path.relpath(entry.path, path)
+            if entry.is_dir(follow_symlinks=False):
+                if len(rels) < MAX_MEMBERS:
+                    rels.append(rel + "/")
+                if entry.name not in VENDORED_DIRS:
+                    queue.append(entry.path)
+                continue
             if len(rels) < MAX_MEMBERS:
-                rels.append(str(p.relative_to(path)))
-            if len(docs) < 3 and p.suffix.lower().lstrip(".") in DOCS:
-                docs.append(p)
-        if len(rels) >= MAX_MEMBERS and len(docs) >= 3:
+                rels.append(rel)
+            if len(docs) < MAX_DOCS and entry.is_file(follow_symlinks=False) \
+                    and Path(entry.name).suffix.lower().lstrip(".") in DOCS:
+                docs.append(Path(entry.path))
+        if len(rels) >= MAX_MEMBERS and len(docs) >= MAX_DOCS:
             break
     out = "\n".join(rels)
     for d in docs:

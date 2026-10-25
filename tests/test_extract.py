@@ -227,3 +227,63 @@ def test_huge_notebook_and_long_line_bounded(tmp_path, monkeypatch):
     c = tmp_path / "one.py"
     c.write_text("y" * 1_000_000)
     assert len(extract.sample(c)) < extract.MAX_CODE_BYTES + 100
+
+
+# ---------------------------------------------------------------- final review I3
+
+
+def _count_entries(monkeypatch):
+    seen = []
+    real = extract.os.scandir
+
+    class Counting:
+        def __init__(self, path):
+            self.it = real(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.it.close()
+
+        def __iter__(self):
+            for e in self.it:
+                seen.append(e.path)
+                yield e
+
+        def close(self):
+            self.it.close()
+
+    monkeypatch.setattr(extract.os, "scandir", Counting)
+    return seen
+
+
+def test_dir_doc_search_is_bounded_in_doc_free_trees(tmp_path, monkeypatch):
+    d = tmp_path / "dataset"
+    for i in range(60):
+        sub = d / f"shard{i:02}"
+        sub.mkdir(parents=True)
+        for j in range(50):
+            (sub / f"r{j:02}.bin").write_bytes(b"x")
+    seen = _count_entries(monkeypatch)
+    out = extract.sample(d)
+    assert len(seen) <= extract.MAX_DOC_SEARCH == 2000
+    listed = out.splitlines()[1:]
+    assert len(listed) == extract.MAX_MEMBERS
+
+
+def test_dir_prefers_top_documents_and_skips_vendored(tmp_path):
+    d = tmp_path / "proj"
+    (d / "a/b/c").mkdir(parents=True)
+    (d / "a/b/c/deep.txt").write_text("deep words")
+    (d / "node_modules/pkg").mkdir(parents=True)
+    (d / "node_modules/pkg/README.md").write_text("vendored readme")
+    (d / "build").mkdir()
+    (d / "build/notes.txt").write_text("build output")
+    for name in ("README.md", "top.txt", "plan.md"):
+        (d / name).write_text(f"top {name}")
+    out = extract.sample(d)
+    assert "top README.md" in out and "top top.txt" in out and "top plan.md" in out
+    assert "deep words" not in out
+    assert "vendored readme" not in out and "build output" not in out
+    assert "node_modules/pkg" not in out  # listed as a folder, never walked into
