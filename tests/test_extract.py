@@ -181,3 +181,49 @@ def test_archive_has_installer_false_for_corrupt_zip(tmp_path):
     p = tmp_path / "a.zip"
     p.write_bytes(b"garbage")
     assert extract.archive_has_installer(p) is False
+
+
+def test_dir_prunes_hidden_dirs_and_stops_early(tmp_path, monkeypatch):
+    d = tmp_path / "big"
+    (d / ".git").mkdir(parents=True)
+    (d / ".git" / "obj").write_text("secret")
+    for i in range(300):
+        (d / f"f{i:03}.bin").write_text("x")
+    for i in range(3):
+        (d / f"z{i}.txt").write_text("doc text")
+    for i in range(50):
+        (d / f"sub{i:02}").mkdir()
+    visited = []
+    real = extract.os.walk
+
+    def spy(top):
+        for root, dirs, files in real(top):
+            visited.append(Path(root).name)
+            yield root, dirs, files
+
+    monkeypatch.setattr(extract.os, "walk", spy)
+    out = extract.sample(d)
+    assert ".git" not in out and "secret" not in out
+    assert ".git" not in visited
+    assert len(visited) < 10  # did not descend into every sub dir
+    assert len([l for l in out.splitlines() if l.startswith("f")]) <= 200
+
+
+def test_office_member_read_is_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(extract, "MAX_XML_BYTES", 1000)
+    p = tmp_path / "bomb.docx"
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", "<w:t>" + "a " * 500000 + "</w:t>")
+    out = extract.sample(p)
+    assert out.startswith("Name: bomb.docx\n")
+    assert len(out) < 1200
+
+
+def test_huge_notebook_and_long_line_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(extract, "MAX_NOTEBOOK_BYTES", 100)
+    n = tmp_path / "n.ipynb"
+    n.write_text(json.dumps({"cells": [{"cell_type": "code", "source": "x" * 500}]}))
+    assert extract.sample(n) == "Name: n.ipynb\n"
+    c = tmp_path / "one.py"
+    c.write_text("y" * 1_000_000)
+    assert len(extract.sample(c)) < extract.MAX_CODE_BYTES + 100

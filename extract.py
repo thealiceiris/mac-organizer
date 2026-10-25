@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import tarfile
@@ -10,6 +11,9 @@ from pathlib import Path
 
 TIMEOUT = 60
 MAX_MEMBERS = 200
+MAX_XML_BYTES = 4 * 1024 * 1024
+MAX_NOTEBOOK_BYTES = 8 * 1024 * 1024
+MAX_CODE_BYTES = 64 * 1024
 OFFICE = {"docx", "pptx", "xlsx"}
 CODE = {
     "py", "js", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "cc", "java", "kt", "swift",
@@ -44,11 +48,15 @@ def _office(path: Path) -> str:
                   or re.fullmatch(r"ppt/slides/slide\d+\.xml", n)]
         wanted.sort(key=lambda n: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", n)])
         for n in wanted:
-            parts.append(_strip_xml(z.read(n).decode("utf-8", errors="replace")))
+            with z.open(n) as member:
+                raw = member.read(MAX_XML_BYTES)
+            parts.append(_strip_xml(raw.decode("utf-8", errors="replace")))
     return "\n".join(parts)
 
 
 def _notebook(path: Path) -> str:
+    if path.stat().st_size > MAX_NOTEBOOK_BYTES:
+        return ""
     nb = json.loads(path.read_text(encoding="utf-8", errors="replace"))
     out = []
     for cell in nb.get("cells", []):
@@ -59,11 +67,9 @@ def _notebook(path: Path) -> str:
 
 
 def _code(path: Path) -> str:
-    lines = []
     with open(path, "rb") as f:
-        for _, raw in zip(range(150), f):
-            lines.append(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
-    return "\n".join(lines)
+        raw = f.read(MAX_CODE_BYTES)
+    return "\n".join(raw.decode("utf-8", errors="replace").splitlines()[:150])
 
 
 def _members(path: Path, ext: str) -> list[str]:
@@ -80,16 +86,22 @@ def _members(path: Path, ext: str) -> list[str]:
 
 
 def _dir(path: Path, runner) -> str:
-    rels = []
-    docs = []
-    for p in sorted(path.rglob("*")):
-        rel = p.relative_to(path)
-        if any(part.startswith(".") for part in rel.parts):
-            continue
-        if len(rels) < MAX_MEMBERS:
-            rels.append(str(rel) + ("/" if p.is_dir() else ""))
-        if p.is_file() and len(docs) < 3 and p.suffix.lower().lstrip(".") in DOCS:
-            docs.append(p)
+    rels: list[str] = []
+    docs: list[Path] = []
+    for root, dirnames, filenames in os.walk(path):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        base = Path(root)
+        for name in dirnames:
+            if len(rels) < MAX_MEMBERS:
+                rels.append(str((base / name).relative_to(path)) + "/")
+        for name in sorted(filenames):
+            if name.startswith("."):
+                continue
+            p = base / name
+            if len(rels) < MAX_MEMBERS:
+                rels.append(str(p.relative_to(path)))
+            if len(docs) < 3 and p.suffix.lower().lstrip(".") in DOCS:
+                docs.append(p)
         if len(rels) >= MAX_MEMBERS and len(docs) >= 3:
             break
     out = "\n".join(rels)
