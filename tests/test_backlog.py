@@ -203,8 +203,8 @@ def test_identical_to_existing_item_is_trash(home, make_file):
     assert by_src(report)["new.pdf"][0] == "TRASH"
 
 
-def test_inbox_unsure_stays_and_type_rules_move(home, make_file):
-    """Ruling 7."""
+def test_inbox_type_rules_move_and_unsure_goes_to_misc(home, make_file):
+    """Ruling 7, with unsure items now sent to ~/Documents/Misc."""
     make_file(home / "Documents/Inbox/lecture.pdf", content="l")
     make_file(home / "Documents/Inbox/mystery.pdf", content="m")
     make_file(home / "Documents/Inbox/script.py", content="s")
@@ -214,7 +214,9 @@ def test_inbox_unsure_stays_and_type_rules_move(home, make_file):
     report = do_plan(home, FakeFactory(by_name({"lecture": NLP})), "Documents/Inbox")
 
     got = by_src(report)
-    assert set(got) == {"lecture.pdf", "pic.png"}
+    assert set(got) == {"lecture.pdf", "pic.png", "mystery.pdf", "script.py"}
+    assert got["mystery.pdf"][2] == str(home / "Documents/Misc/mystery.pdf")
+    assert got["script.py"][2] == str(home / "Documents/Misc/script.py")
     assert got["lecture.pdf"][:3] == ["MOVE", str(home / "Documents/Inbox/lecture.pdf"),
                                       str(home / "Documents" / NLP / "lecture.pdf")]
     assert got["lecture.pdf"][4] == NLP
@@ -701,3 +703,18 @@ def test_hand_written_trash_of_a_downloads_pdf_is_rejected(home, make_file, caps
     assert not (home / ".Trash/doc.pdf").exists()
     out = capsys.readouterr().out
     assert "REJECTED" in out and "doc.pdf" in out
+
+
+def test_inbox_unsure_goes_to_misc_and_applies(home, make_file):
+    make_file(home / "Documents/Inbox/mystery.pdf", content="m")
+    make_file(home / "Documents/Inbox/book.epub", content="b")
+    (home / "Documents/Misc").mkdir(parents=True, exist_ok=True)
+    report = do_plan(home, FakeFactory(), "Documents/Inbox")
+    got = by_src(report)
+    assert got["mystery.pdf"][:3] == ["MOVE", str(home / "Documents/Inbox/mystery.pdf"),
+                                      str(home / "Documents/Misc/mystery.pdf")]
+    assert got["book.epub"][2] == str(home / "Documents/Misc/book.epub")
+    do_apply(home, report)
+    assert (home / "Documents/Misc/mystery.pdf").exists()
+    assert (home / "Documents/Misc/book.epub").exists()
+    assert not (home / "Documents/Inbox/mystery.pdf").exists()

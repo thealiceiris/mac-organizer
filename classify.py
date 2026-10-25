@@ -19,7 +19,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-EXCLUDED_TOP = {"Inbox", "Keys"}
+EXCLUDED_TOP = {"Inbox", "Keys", "Misc"}
 COURSES_DIR = "Academics"
 MAX_EXAMPLES = 5
 MAX_SAMPLE_CHARS = 12_000

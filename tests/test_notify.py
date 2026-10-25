@@ -32,7 +32,7 @@ class Fake:
 
 def test_summary_text_groups_by_folder():
     assert notify.summary_text(_big()) == (
-        "7 files sorted: 5 → Natural Language Processing, 1 → Development, 1 left in Inbox")
+        "7 files sorted: 5 → Natural Language Processing, 1 → Development, 1 left in Misc")
 
 
 def test_summary_mentions_duplicates_and_ai_unavailable():
@@ -61,7 +61,7 @@ def test_uses_terminal_notifier_with_open_report(tmp_path):
     assert report.parent == tmp_path / "reports"
     lines = report.read_text().splitlines()
     assert lines[0] == "f0.pdf  →  Natural Language Processing  — reason 0"
-    assert lines[6] == "f6.pdf  →  Inbox  — reason 6"
+    assert lines[6] == "f6.pdf  →  Misc  — reason 6"
     assert len(lines) == 7  # rule-only move is not reported
 
 
@@ -90,7 +90,7 @@ def test_unavailable_message(tmp_path):
     n = notify.Notifier(tmp_path, runner=fake, which=lambda name: "/bin/tn")
     n.unavailable()
     cmd = fake.calls[0][0]
-    assert cmd[cmd.index("-message") + 1] == "AI sorting unavailable — files will wait in Inbox"
+    assert cmd[cmd.index("-message") + 1] == "AI sorting unavailable — files will wait in Misc"
     assert "-open" not in cmd
 
 

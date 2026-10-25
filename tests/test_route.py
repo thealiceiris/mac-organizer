@@ -665,16 +665,16 @@ def test_default_rules_cover_v2_types(default_rules, tmp_path, make_file):
     assert match("a.ics", age=2 * 86400).action == "trash"
     assert match("a.ics", age=3600) is None
     pdf = match("a.pdf")
-    assert (pdf.action, pdf.dest) == ("smart", "~/Documents/Inbox")
+    assert (pdf.action, pdf.dest) == ("smart", "~/Documents/Misc")
     nb = match("x.ipynb")
-    assert (nb.action, nb.dest) == ("smart", "~/Documents/Development")
+    assert (nb.action, nb.dest) == ("smart", "~/Documents/Misc")
 
     candidates = [
         r for r in default_rules
         if r.source == tmp_path / "Downloads" and r.kind == "file" and "zip" in r.ext
     ]
     assert candidates[0].has_installer is True
-    assert candidates[1].action == "smart" and candidates[1].dest == ""
+    assert candidates[1].action == "smart" and candidates[1].dest == "~/Documents/Misc"
 
 
 def test_default_rules_desktop_dirs(default_rules, tmp_path):

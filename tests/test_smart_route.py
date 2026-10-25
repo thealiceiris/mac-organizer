@@ -88,12 +88,40 @@ def by_name(table):
 
 # ---------------------------------------------------------------- setup
 
+STAY_RULES = """
+[[rule]]
+source = "~/Downloads"
+ext = ["zip", "tar", "gz", "tgz"]
+has_installer = true
+action = "move"
+dest = "~/Downloads/Installers"
+
+[[rule]]
+source = "~/Downloads"
+ext = ["zip", "tar", "gz", "tgz"]
+action = "smart"
+dest = ""
+
+[[rule]]
+source = "~/Downloads"
+kind = "dir"
+ext = ["app"]
+action = "move"
+dest = "~/Downloads/Installers"
+
+[[rule]]
+source = "~/Downloads"
+kind = "dir"
+action = "smart"
+dest = ""
+"""
+
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     docs = tmp_path / "Documents"
-    for d in [NLP, "Development", "Career", "Inbox"]:
+    for d in [NLP, "Development", "Career", "Inbox", "Misc"]:
         (docs / d).mkdir(parents=True)
     (tmp_path / "Downloads").mkdir()
     (tmp_path / "model.gguf").write_bytes(b"GGUF")
@@ -101,8 +129,11 @@ def home(tmp_path, monkeypatch):
     (tmp_path / "rules.toml").write_text(
         src.read_text().replace("@@SCREENSHOT_DIR@@", str(tmp_path / "Pictures/Screenshots"))
     )
+    # The shipped rules send unsure items to ~/Documents/Misc. These local rules keep
+    # zips and Downloads folders in place when unsure, so the leave-it-alone paths
+    # (verdict cache, failure counter, settle walk) stay covered.
     (tmp_path / "rules.local.toml").write_text(
-        f'[smart_sort]\nmodel_path = "{tmp_path / "model.gguf"}"\n'
+        f'[smart_sort]\nmodel_path = "{tmp_path / "model.gguf"}"\n' + STAY_RULES
     )
     return tmp_path
 
@@ -190,7 +221,7 @@ def test_unsure_pdf_goes_to_documents_inbox(home, make_file):
 
     run_main(home, factory, notifier)
 
-    dst = home / "Documents/Inbox/mystery.pdf"
+    dst = home / "Documents/Misc/mystery.pdf"
     assert dst.exists()
     assert f"  MOVE  {src} -> {dst}" in log_text(home)
     assert rows(state(home) / "placements.jsonl") == []
@@ -259,8 +290,8 @@ def test_server_crash_mid_batch_routes_rest_to_fallback_and_flags_unavailable(ho
     run_main(home, factory, notifier)
 
     assert (home / "Documents" / NLP / "a1.pdf").exists()
-    assert (home / "Documents/Inbox/a2.pdf").exists()
-    assert (home / "Documents/Inbox/a3.pdf").exists()
+    assert (home / "Documents/Misc/a2.pdf").exists()
+    assert (home / "Documents/Misc/a3.pdf").exists()
     assert (home / "Downloads/z.zip").exists()
     assert len(factory.samples) == 2  # no retry, no restart
     assert (factory.entered, factory.exited) == (1, 1)
@@ -279,8 +310,8 @@ def test_server_unavailable_at_start_routes_all_to_fallback(home, make_file):
 
     run_main(home, factory, notifier)
 
-    assert (home / "Documents/Inbox/a.pdf").exists()
-    assert (home / "Documents/Inbox/b.pdf").exists()
+    assert (home / "Documents/Misc/a.pdf").exists()
+    assert (home / "Documents/Misc/b.pdf").exists()
     assert factory.entered == 1  # tried once, not once per item
     # final review I1: "being sorted" is sent only once the server is up
     assert notifier.calls == ["summary"]
@@ -315,7 +346,7 @@ def test_smart_move_never_creates_folder(home, make_file):
 
     assert not career.exists()
     assert not src.exists()
-    assert (home / "Documents/Inbox/cv.pdf").exists()
+    assert (home / "Documents/Misc/cv.pdf").exists()
     assert [e.kind for e in router.batch.entries] == ["inbox"]
 
 
@@ -386,18 +417,18 @@ def test_disabled_smart_sort_is_silent_fallback(home, make_file):
     """Fix round 1: AI turned off on purpose is not an outage."""
     (home / "rules.local.toml").write_text(
         f'[smart_sort]\nenabled = false\nmodel_path = "{home / "model.gguf"}"\n')
-    make_file(home / "Downloads/stuff.zip")
-    make_file(home / "Downloads/a.pdf")
+    make_file(home / "Downloads/stuff.zip", content="zip bytes")
+    make_file(home / "Downloads/a.pdf", content="pdf bytes")
     factory, notifier = FakeFactory(lambda s, n: NLP), FakeNotifier()
 
     run_main(home, factory, notifier)
     run_main(home, factory, notifier)
 
     assert factory.made == 0
-    assert (home / "Downloads/stuff.zip").exists()
-    assert (home / "Documents/Inbox/a.pdf").exists()
+    assert (home / "Documents/Misc/stuff.zip").exists()  # shipped rules: unsure → Misc
+    assert (home / "Documents/Misc/a.pdf").exists()
     assert rows(state(home) / "verdicts.jsonl") == []
-    assert notifier.calls == ["summary"]  # the Inbox move; never "unavailable"
+    assert notifier.calls == ["summary"]  # the Misc moves; never "unavailable"
     assert notifier.batches[0].ai_unavailable is False
     assert not (state(home) / "unavailable-notified").exists()
 
@@ -413,7 +444,7 @@ def test_missing_model_falls_back_and_flags_unavailable_once_per_day(home, make_
 
     assert factory.made == 0
     assert (home / "Downloads/stuff.zip").exists()
-    assert (home / "Documents/Inbox/a.pdf").exists()
+    assert (home / "Documents/Misc/a.pdf").exists()
     assert rows(state(home) / "verdicts.jsonl") == []
     assert first.calls == ["summary"]  # no "sorting…" start: nothing is started
     assert first.batches[0].ai_unavailable is True
@@ -455,7 +486,7 @@ def test_server_crash_flag_throttled_with_notice(home, make_file):
     notifier = FakeNotifier()
     run_main(home, FakeFactory(answer), notifier)
 
-    assert (home / "Documents/Inbox/a.pdf").exists()
+    assert (home / "Documents/Misc/a.pdf").exists()
     assert notifier.calls == ["start", "summary"]
     assert notifier.batches[0].ai_unavailable is False
 
@@ -480,7 +511,7 @@ def test_candidate_vanishing_after_decision_takes_fallback(home, make_file, monk
 
     assert not career.exists()
     assert not src.exists()
-    assert (home / "Documents/Inbox/cv.pdf").exists()
+    assert (home / "Documents/Misc/cv.pdf").exists()
     assert zsrc.exists()  # no fallback for archives: it stays
     assert rows(state(home) / "verdicts.jsonl") == []
     assert rows(state(home) / "placements.jsonl") == []
@@ -510,7 +541,7 @@ def test_unexpected_error_for_one_item_is_unsure_uncached_and_run_continues(home
     factory, notifier = FakeFactory(answer), FakeNotifier()
     assert run_main(home, factory, notifier) == 0
 
-    assert (home / "Documents/Inbox/a-bad.pdf").exists()
+    assert (home / "Documents/Misc/a-bad.pdf").exists()
     assert (home / "Downloads/b-bad.zip").exists()
     assert (home / "Documents" / NLP / "c-ngrams.pdf").exists()
     assert rows(state(home) / "verdicts.jsonl") == []
@@ -632,7 +663,7 @@ def test_shipped_local_template_leaves_model_unset_and_falls_back(home, make_fil
     run_main(home, factory, notifier)
 
     assert factory.made == 0
-    assert (home / "Documents/Inbox/a.pdf").exists()
+    assert (home / "Documents/Misc/a.pdf").exists()
     assert notifier.batches[0].ai_unavailable is True
 
 
@@ -676,7 +707,7 @@ def test_backoff_routes_fallbacks_without_starting_the_model(home, make_file):
     run_main(home, factory, notifier)
 
     assert factory.made == 0
-    assert (home / "Documents/Inbox/a.pdf").exists()
+    assert (home / "Documents/Misc/a.pdf").exists()
     assert notifier.calls == ["summary"]
     assert notifier.batches[0].ai_unavailable is True
 
@@ -884,7 +915,7 @@ def test_dry_run_previews_smart_items_without_the_model(home, make_file, capsys)
                 "--lock", str(home / "lock")], classifier_factory=factory, notifier=notifier)
 
     out = capsys.readouterr().out
-    assert f"SMART? {pdf} (model decides; fallback {home / 'Documents/Inbox'})" in out
+    assert f"SMART? {pdf} (model decides; fallback {home / 'Documents/Misc'})" in out
     assert f"SMART? {zf} (model decides; fallback stay)" in out
     assert f"SMART? {home / 'Downloads/project'} (model decides; fallback stay)" in out
     assert pdf.exists() and zf.exists()

@@ -14,13 +14,13 @@ from batch import Batch
 
 TITLE = "mac-organizer"
 START_TEXT = "Files are being sorted…"
-UNAVAILABLE_TEXT = "AI sorting unavailable — files will wait in Inbox"
+UNAVAILABLE_TEXT = "AI sorting unavailable — files will wait in Misc"
 REPORT_KEEP_DAYS = 30
 FALLBACK_PATHS = ("/opt/homebrew/bin/terminal-notifier", "/usr/local/bin/terminal-notifier")
 
 
 def _label(folder: str | None) -> str:
-    return Path(folder).name if folder else "Inbox"
+    return Path(folder).name if folder else "Misc"
 
 
 def summary_text(batch: Batch) -> str:
@@ -41,7 +41,7 @@ def summary_text(batch: Batch) -> str:
     total = sum(groups.values()) + inbox + dupes
     parts = [f"{n} → {name}" for name, n in groups.items()]
     if inbox:
-        parts.append(f"{inbox} left in Inbox")
+        parts.append(f"{inbox} left in Misc")
     if dupes:
         parts.append(f"{dupes} duplicates to Trash")
     if total:
@@ -59,7 +59,7 @@ def _report_line(e) -> str:
     if e.kind == "duplicate":
         where = "Trash (duplicate)"
     elif e.kind == "inbox":
-        where = "Inbox"
+        where = "Misc"
     else:
         where = _label(e.folder)
     line = f"{e.src.name}  →  {where}"

@@ -17,7 +17,7 @@ them into the right folder in `~/Documents`, entirely on your Mac.
     notification summary clickable (without it, plain macOS notifications are used)
 
 Without these tools the rule-based routing still works; documents that need
-the model simply wait in `~/Documents/Inbox`.
+the model go to `~/Documents/Misc`.
 
 ## Install
 
@@ -34,7 +34,7 @@ cd ~/.mac-organizer
    (launchd's `PATH` lacks Homebrew, so the check also looks in
    `/opt/homebrew/bin` and `/usr/local/bin`.)
 2. Runs `setup.py`, which creates `~/Inbox`, `~/Media/Images`,
-   `~/Media/Screenshots`, `~/Documents/Inbox`, `~/Downloads/Installers`, and
+   `~/Media/Screenshots`, `~/Documents/Misc`, `~/Downloads/Installers`, and
    the state directory; detects your screenshot location; generates
    `rules.toml` and a personal `rules.local.toml`; installs the `launchd`
    agents (one per watched folder plus a 10-minute sweep — five, or four when
@@ -46,7 +46,7 @@ cd ~/.mac-organizer
    never starts the model).
 
 Then set `model_path` in `~/.mac-organizer/rules.local.toml` (see "Changing the
-model"); until you do, smart sort is off and documents wait in the Inbox.
+model"); until you do, smart sort is off and documents go to `~/Documents/Misc`.
 
 Then open Obsidian and "Open folder as vault" → `~/Notes`.
 
@@ -68,12 +68,13 @@ Defaults:
 | `~/Downloads`, `~/Inbox` | keys and certificates (`pem p12 pfx cer crt asc gpg pgp`) | `~/Documents/Keys` (permissions 700) |
 | `~/Downloads`, `~/Inbox` | `.ics` calendar invites | Trash, after 24 hours |
 | `~/Downloads`, `~/Inbox` | zip / tar / gz archives containing an installer | `~/Downloads/Installers` |
-| `~/Downloads`, `~/Inbox` | other archives, documents (pdf, office, csv, ...) | smart sort (below), else `~/Documents/Inbox` |
-| `~/Downloads`, `~/Inbox` | code and notebooks (`py ipynb html js json sh ...`) | smart sort, else `~/Documents/Development` |
-| `~/Downloads` only | folders | `.app` bundles to Installers, the rest smart sort |
+| `~/Downloads`, `~/Inbox` | other archives, documents (pdf, office, csv, ...) | smart sort (below), else `~/Documents/Misc` |
+| `~/Downloads`, `~/Inbox` | code and notebooks (`py ipynb html js json sh ...`) | smart sort, else `~/Documents/Misc` |
+| `~/Downloads` only | folders | `.app` bundles to Installers, the rest smart sort, else `~/Documents/Misc` |
+| `~/Downloads`, `~/Inbox` | anything else no rule places (`.epub`, `.class`, ...) | `~/Documents/Misc` |
 
 Archives are opened (read-only, never extracted to disk) to see whether they
-hold an installer. Anything not matched is left alone. Files are never
+hold an installer. Anything no rule places goes to `~/Documents/Misc`; an `.ics` younger than a day waits until it can be trashed. Files are never
 overwritten (name collisions get a ` -2` suffix); the only things ever deleted
 are byte-identical duplicates and old `.ics` files, and both go to the Trash,
 not oblivion. Files newer than 60 seconds and partial downloads (`.crdownload`,
@@ -85,10 +86,10 @@ only.
 For documents, archives, code and folders, a local model reads a sample of the
 content (for an archive, the names inside it; for a folder, up to 200 of its
 paths and a few documents near its top) and picks the best existing folder. The candidates are the top-level
-folders of `~/Documents` (except `Inbox` and `Keys`) plus the folders one level
+folders of `~/Documents` (except `Inbox`, `Keys` and `Misc`) plus the folders one level
 inside `~/Documents/Academics` if you have one. **It never creates folders**:
 if the model is unsure (confidence below the `threshold`, default 0.6), or no
-folder fits, the item goes to `~/Documents/Inbox` (or the rule's own `dest`).
+folder fits, the item goes to `~/Documents/Misc` (the rule's `dest`).
 
 Privacy: everything is on-device. `llama-server` is started for each batch,
 listens on `127.0.0.1` only, is called with proxies bypassed, and is stopped
@@ -131,8 +132,8 @@ Trash instead of being stored again (and logged).
 ## Notifications
 
 You get a notification when the model starts on a batch and a summary when it
-ends (also when smart-sorted items moved without the model, e.g. to the
-Inbox). With `terminal-notifier` installed, clicking the summary opens a report
+ends (also when smart-sorted items moved without the model, e.g. to
+Misc). With `terminal-notifier` installed, clicking the summary opens a report
 of what went where; without it, mac-organizer falls back to macOS's built-in
 `osascript display notification` (not clickable). Batches handled purely by
 rules are silent.
@@ -140,7 +141,7 @@ rules are silent.
 "Files are being sorted…" is sent only once the model has started; a run that
 sent it always ends with a summary. If the model cannot be started (or its
 file is missing), you get at most one notice a day saying files will wait in
-the Inbox, and a model that failed to start is not tried again for 24 hours.
+Misc, and a model that failed to start is not tried again for 24 hours.
 An item the model fails on three sweeps in a row is left where it is until it
 changes. `llama-server`'s own output from the last start is in
 `~/.local/state/mac-organizer/llama-server.log`.

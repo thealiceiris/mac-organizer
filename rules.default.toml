@@ -77,6 +77,12 @@ ext = ["ics"]
 action = "trash"
 min_age_seconds = 86400
 
+# A calendar file younger than a day waits (it is trashed once a day old).
+[[rule]]
+source = "~/Downloads"
+ext = ["ics"]
+action = "skip"
+
 [[rule]]
 source = "~/Downloads"
 ext = ["zip", "tar", "gz", "tgz"]
@@ -88,19 +94,19 @@ dest = "~/Downloads/Installers"
 source = "~/Downloads"
 ext = ["zip", "tar", "gz", "tgz"]
 action = "smart"
-dest = ""
+dest = "~/Documents/Misc"
 
 [[rule]]
 source = "~/Downloads"
 ext = ["pdf", "doc", "docx", "pages", "xls", "xlsx", "csv", "ppt", "pptx", "key", "rtf"]
 action = "smart"
-dest = "~/Documents/Inbox"
+dest = "~/Documents/Misc"
 
 [[rule]]
 source = "~/Downloads"
 ext = ["ipynb", "py", "m", "slx", "html", "php", "js", "ts", "json", "yaml", "yml", "sql", "sh"]
 action = "smart"
-dest = "~/Documents/Development"
+dest = "~/Documents/Misc"
 
 # Folders (Downloads only): .app bundles to Installers, the rest sorted by the model.
 [[rule]]
@@ -114,7 +120,13 @@ dest = "~/Downloads/Installers"
 source = "~/Downloads"
 kind = "dir"
 action = "smart"
-dest = ""
+dest = "~/Documents/Misc"
+
+# Anything no rule above places, and anything the model is unsure of, goes to Misc.
+[[rule]]
+source = "~/Downloads"
+action = "move"
+dest = "~/Documents/Misc"
 
 # --- Inbox: the routing hub -------------------------------------------------
 [[rule]]
@@ -159,6 +171,12 @@ ext = ["ics"]
 action = "trash"
 min_age_seconds = 86400
 
+# A calendar file younger than a day waits (it is trashed once a day old).
+[[rule]]
+source = "~/Inbox"
+ext = ["ics"]
+action = "skip"
+
 [[rule]]
 source = "~/Inbox"
 ext = ["zip", "tar", "gz", "tgz"]
@@ -170,16 +188,22 @@ dest = "~/Downloads/Installers"
 source = "~/Inbox"
 ext = ["zip", "tar", "gz", "tgz"]
 action = "smart"
-dest = ""
+dest = "~/Documents/Misc"
 
 [[rule]]
 source = "~/Inbox"
 ext = ["pdf", "doc", "docx", "pages", "xls", "xlsx", "csv", "ppt", "pptx", "key", "rtf"]
 action = "smart"
-dest = "~/Documents/Inbox"
+dest = "~/Documents/Misc"
 
 [[rule]]
 source = "~/Inbox"
 ext = ["ipynb", "py", "m", "slx", "html", "php", "js", "ts", "json", "yaml", "yml", "sql", "sh"]
 action = "smart"
-dest = "~/Documents/Development"
+dest = "~/Documents/Misc"
+
+# Anything no rule above places, and anything the model is unsure of, goes to Misc.
+[[rule]]
+source = "~/Inbox"
+action = "move"
+dest = "~/Documents/Misc"

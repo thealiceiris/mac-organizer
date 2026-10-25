@@ -325,3 +325,21 @@ These use `terminal-notifier` (Homebrew) so the summary can be clicked
 - Batch report format and the veto mechanism.
 - Test strategy. The existing 58 tests must stay green. Model calls are
   stubbed in tests, plus one opt-in test against the real model.
+
+## Amendment (2026-10-25, after the backlog run): Misc folder
+
+The user asked that "if the AI isn't sure it should be in a misc folder".
+`~/Documents/Misc` replaces `~/Documents/Inbox` as the fallback:
+
+- Every smart rule (documents, code and notebooks, archives, Downloads folders)
+  falls back to `~/Documents/Misc` when the model is unsure, disabled or
+  unavailable.
+- Files in `~/Downloads` and `~/Inbox` that no rule places (e.g. `.epub`,
+  `.class`) also go to `~/Documents/Misc`. An `.ics` younger than a day waits,
+  so the 24 h trash rule still applies to it.
+- `Misc` is never a smart-sort candidate, so the model can't choose it.
+- Notifications say "left in Misc".
+- Backlog: unsure `~/Documents/Inbox` items are planned as MOVE to Misc instead
+  of staying.
+
+Vetoed items (the keep-list) still stay where they are.

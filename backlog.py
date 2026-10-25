@@ -112,10 +112,10 @@ def _plan_dir(directory: Path, config, smart, now: float, notes: list[str]) -> l
     resolved = directory.resolve()
     out: list[Line] = []
     if resolved == _inbox().resolve():
-        # Inbox files go through the ~/Downloads file rules; folders stay.
+        # Inbox files go through the ~/Downloads file rules (unsure → Misc); folders stay.
         for child in children:
             if child.is_file():
-                out += _plan_one(child, config, smart, now, _downloads(), notes, inbox=True)
+                out += _plan_one(child, config, smart, now, _downloads(), notes)
         return out
     if resolved != _downloads().resolve():
         for child in children:
@@ -139,8 +139,7 @@ def _plan_dir(directory: Path, config, smart, now: float, notes: list[str]) -> l
     return out
 
 
-def _plan_one(path: Path, config, smart, now: float, source: Path, notes: list[str],
-              inbox: bool = False) -> list[Line]:
+def _plan_one(path: Path, config, smart, now: float, source: Path, notes: list[str]) -> list[Line]:
     if any(c in str(path) for c in UNSAFE_CHARS):
         notes.append(f"skipped (tab or line break in its name): {str(path)!r}")
         return []
@@ -152,8 +151,6 @@ def _plan_one(path: Path, config, smart, now: float, source: Path, notes: list[s
         return []
     if planned is None:
         return []
-    if inbox and planned.rule.action == "smart" and planned.folder is None:
-        return []  # unsure: it stays in the Inbox
     if any(c in str(planned.action.dst) for c in UNSAFE_CHARS):
         notes.append(f"skipped (tab or line break in its destination): {str(path)!r}")
         return []
@@ -494,9 +491,8 @@ class _Checker:
 
     def routed_here(self, ln: Line) -> None:
         """A MOVE without a folder must match what the rules decide for ``src`` now."""
-        inbox, planned = self._replan(ln)
-        if planned is None or planned.action.verb == "TRASH" or planned.action.dst != ln.dst \
-                or (inbox and planned.rule.action == "smart"):
+        _, planned = self._replan(ln)
+        if planned is None or planned.action.verb == "TRASH" or planned.action.dst != ln.dst:
             raise _Reject("not where the rules send it")
 
     def trashed_by_rule(self, ln: Line) -> None:
