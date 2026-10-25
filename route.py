@@ -409,8 +409,9 @@ class SmartRouter:
     """
 
     def __init__(self, settings: SmartSettings, state: Path,
-                 classifier_factory=classify.LlamaServer, notifier=None):
+                 classifier_factory=classify.LlamaServer, notifier=None, read_only=False):
         self.settings = settings
+        self.read_only = read_only  # planning: never write the verdict cache
         self.state = Path(state)
         self.factory = classifier_factory
         self.notifier = notifier if notifier is not None else NullNotifier()
@@ -435,7 +436,7 @@ class SmartRouter:
 
     def _verdict_cache(self):
         if self._cache is None:
-            self._cache = memory.VerdictCache(self.state)
+            self._cache = memory.VerdictCache(self.state, compact=not self.read_only)
             self._corrections = memory.corrections_count(self.state)
         return self._cache
 
@@ -476,8 +477,8 @@ class SmartRouter:
             return None
 
     def route(self, path: Path, rule: Rule, now: float) -> Action | None:
-        if path.is_dir() and path.parent.resolve() != (Path.home() / "Downloads").resolve():
-            return None  # folders are sorted from ~/Downloads only
+        if path.is_dir() and rule.source.resolve() != (Path.home() / "Downloads").resolve():
+            return None  # folders are sorted by the ~/Downloads rules only
         cache = self._verdict_cache()
         key = self._cache_key(path)
         if cache.get(*key):
@@ -500,7 +501,7 @@ class SmartRouter:
             reason = "AI sorting off" if self.disabled else "AI sorting unavailable"
         else:
             reason = verdict.reason
-        if not rule.dest and verdict is not None and verdict.folder is None:
+        if not rule.dest and verdict is not None and verdict.folder is None and not self.read_only:
             cache.put_unsure(*key)  # a genuine "unsure": never an outage or a vanished folder
         return self.fallback(path, rule, reason, summary)
 
@@ -515,6 +516,10 @@ class SmartRouter:
         self._picks.pop(path, None)
         self.batch.add(path, path, None, "stay", reason, smart=True)
         return None
+
+    def pick(self, path: Path) -> _Pick | None:
+        """The decision behind the last action planned for ``path``."""
+        return self._picks.get(path)
 
     def record(self, rule: Rule, done: Action, now: float) -> None:
         """Book a performed action into the batch (and placements for smart moves)."""
@@ -565,6 +570,60 @@ class SmartRouter:
         return True
 
 
+@dataclass(frozen=True)
+class PlannedLine:
+    """What routing decided for one item, before anything moves."""
+
+    action: Action
+    rule: Rule
+    reason: str = ""
+    folder: str | None = None  # candidate name for a smart decision
+
+
+def _rule_reason(rule: Rule) -> str:
+    return "type rule: trash" if rule.action == "trash" else f"type rule: {rule.dest}"
+
+
+def plan_item(path: Path, config: Config, smart: SmartRouter | None, now: float, *,
+              source: Path | None = None, on_error=None) -> PlannedLine | None:
+    """Decide where ``path`` goes, moving nothing. None means it stays.
+
+    ``source`` picks whose rules apply (default: the item's own folder). A
+    failure while the smart sort decides is reported through ``on_error``
+    and the item is treated as unsure (its rule's fallback, or it stays).
+    Shared by live routing and the backlog plan so they cannot drift apart.
+    """
+    source = (source or path.parent).resolve()
+    rules = [r for r in config.rules if r.source.resolve() == source]
+    if path.is_dir():
+        if not any(r.kind == "dir" for r in rules) or path.resolve() in own_dest_dirs(config.rules):
+            return None
+    elif not path.is_file():
+        return None
+    if should_skip(path, now):
+        return None
+    rule = match_rule(path, rules, now)
+    if rule is None:
+        return None
+    if rule.action != "smart":
+        action = plan_action(path, rule, now)
+        return None if action is None else PlannedLine(action, rule, _rule_reason(rule))
+    if smart is None:
+        return None  # without a router smart items are left in place
+    try:
+        action = smart.route(path, rule, now)
+    except DestOutsideHome:
+        raise
+    except Exception as exc:  # noqa: BLE001 - contained to this item
+        (on_error or (lambda e: print(f"ERROR  {path}: {e!r}", file=sys.stderr)))(exc)
+        action = smart.fallback(path, rule, "error while sorting")
+    if action is None or (action.dst.name == path.name
+                          and action.dst.parent.resolve() == path.parent.resolve()):
+        return None  # the fallback is where it already is
+    pick = smart.pick(path)
+    return PlannedLine(action, rule, pick.reason if pick else "", pick.folder if pick else None)
+
+
 def process_dir(
     directory: Path,
     rules: list[Rule],
@@ -573,9 +632,7 @@ def process_dir(
     log_path: Path,
     smart: SmartRouter | None = None,
 ) -> list[Action]:
-    dir_rules = [r for r in rules if r.source.resolve() == directory.resolve()]
-    has_dir_rules = any(r.kind == "dir" for r in dir_rules)
-    skip_dirs = own_dest_dirs(rules)
+    config = Config(rules=rules, smart=smart.settings if smart is not None else None)
     done: list[Action] = []
     try:
         children = sorted(directory.iterdir())
@@ -588,28 +645,16 @@ def process_dir(
         intended: Path | None = None
         rule: Rule | None = None
         try:
-            if child.is_dir():
-                if not has_dir_rules or child.resolve() in skip_dirs:
-                    continue
-            elif not child.is_file():
+            line = plan_item(child, config, smart, now, source=directory,
+                             on_error=lambda exc: _item_error(child, exc, dry_run, log_path))
+            if line is None:
                 continue
-            if should_skip(child, now):
-                continue
-            rule = match_rule(child, dir_rules, now)
-            if rule is None:
-                continue
+            rule = line.rule
             if rule.action == "smart":
-                # Without a router (dry run, or a caller that predates smart
-                # sorting) smart items are left in place.
-                if smart is None:
-                    continue
-                result = _smart_item(child, rule, now, dry_run, log_path, smart)
+                result = _apply_smart(child, line, dry_run, log_path, smart)
             else:
-                action = plan_action(child, rule, now)
-                if action is None:
-                    continue
-                intended = action.dst
-                result = apply_action(action, dry_run, log_path)
+                intended = line.action.dst
+                result = apply_action(line.action, dry_run, log_path)
             if result is None:
                 continue
             done.append(result)
@@ -644,26 +689,17 @@ def _item_error(child: Path, exc: BaseException, dry_run: bool, log_path: Path) 
         _log(log_path, "ERROR", child, Path("-"))
 
 
-def _smart_item(child: Path, rule: Rule, now: float, dry_run: bool, log_path: Path,
-                smart: SmartRouter) -> Action | None:
-    """Route one smart item. A failure while deciding is contained to the item:
-    it is logged and the item is treated as unsure (fallback or stay), uncached."""
-    try:
-        action = smart.route(child, rule, now)
-    except DestOutsideHome:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        _item_error(child, exc, dry_run, log_path)
-        action = smart.fallback(child, rule, "error while sorting")
-    if action is None:
-        return None
+def _apply_smart(child: Path, line: PlannedLine, dry_run: bool, log_path: Path,
+                 smart: SmartRouter) -> Action | None:
+    """Perform a planned smart action; a chosen folder that vanished is never recreated."""
+    action = line.action
     try:
         return apply_action(action, dry_run, log_path)
     except DestDirMissing:
         if not action.no_mkdir:
             raise
         # the chosen folder vanished before the move: never recreate it
-        action = smart.fallback(child, rule, "chosen folder no longer exists")
+        action = smart.fallback(child, line.rule, "chosen folder no longer exists")
         return apply_action(action, dry_run, log_path) if action is not None else None
 
 

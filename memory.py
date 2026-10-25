@@ -188,7 +188,7 @@ class VerdictCache:
     One entry per path (the newest); entries older than 30 days are dropped.
     """
 
-    def __init__(self, state: Path):
+    def __init__(self, state: Path, compact: bool = True):
         self.file = Path(state) / VERDICTS
         cutoff = time.time() - WINDOW
         self.rows: dict[str, dict] = {}
@@ -197,7 +197,7 @@ class VerdictCache:
             if isinstance(r.get("key"), str) and isinstance(r.get("path"), str) \
                     and isinstance(r.get("at"), (int, float)) and r["at"] >= cutoff:
                 self.rows[r["path"]] = r  # later lines win
-        if self.file.exists() and len(self.rows) != len(rows):
+        if compact and self.file.exists() and len(self.rows) != len(rows):
             self._save()
 
     def _save(self) -> None:
