@@ -513,3 +513,14 @@ def test_server_missing_model_never_reaps_or_writes_pidfile(tmp_path, fast):
 def test_pid_cmdline_reads_live_and_dead_processes():
     assert "python" in classify._pid_cmdline(os.getpid()).lower()
     assert classify._pid_cmdline(2 ** 22 + 12345) is None
+
+
+@pytest.mark.parametrize("code", [400, 404, 413])
+def test_classify_http_4xx_rejects_only_this_item(tmp_path, model, fast, code):
+    """Final review I1: a 4xx is about this request (e.g. too long), not an outage."""
+    err = urllib.error.HTTPError("http://127.0.0.1:1/v1/chat/completions", code, "bad",
+                                 {}, io.BytesIO(b""))
+    with classify.LlamaServer(model, popen=FakePopen(), urlopen=FakeUrlopen(chat=err)) as srv:
+        with pytest.raises(classify.ItemRejected, match=f"HTTP {code}") as info:
+            srv.classify("Name: x.pdf", _cands(tmp_path), [], 0.6)
+    assert not isinstance(info.value, classify.ServerUnavailable)

@@ -282,7 +282,8 @@ def test_server_unavailable_at_start_routes_all_to_fallback(home, make_file):
     assert (home / "Documents/Inbox/a.pdf").exists()
     assert (home / "Documents/Inbox/b.pdf").exists()
     assert factory.entered == 1  # tried once, not once per item
-    assert notifier.calls == ["start", "summary"]
+    # final review I1: "being sorted" is sent only once the server is up
+    assert notifier.calls == ["summary"]
     assert notifier.batches[0].ai_unavailable is True
 
 
@@ -633,3 +634,161 @@ def test_shipped_local_template_leaves_model_unset_and_falls_back(home, make_fil
     assert factory.made == 0
     assert (home / "Documents/Inbox/a.pdf").exists()
     assert notifier.batches[0].ai_unavailable is True
+
+
+# ---------------------------------------------------------------- final review I1
+
+
+def _all_calls(*notifiers):
+    return [c for n in notifiers for c in n.calls]
+
+
+def test_server_failing_to_start_backs_off_for_a_day(home, make_file):
+    """Three sweeps with a model that never starts: one start attempt, at most one notice."""
+    make_file(home / "Downloads/stuff.zip")
+    factory = FakeFactory(enter_error=ServerUnavailable("not healthy after 120s"))
+    notifiers = [FakeNotifier() for _ in range(3)]
+
+    for n in notifiers:
+        assert run_main(home, factory, n) == 0
+
+    assert factory.entered == 1
+    calls = _all_calls(*notifiers)
+    assert "start" not in calls
+    assert len(calls) <= 1
+    assert calls == ["unavailable"]
+    assert (home / "Downloads/stuff.zip").exists()
+    assert rows(state(home) / "verdicts.jsonl") == []
+    assert (state(home) / route.BACKOFF_STAMP).exists()
+
+    # a day later the model is tried again
+    (state(home) / route.BACKOFF_STAMP).write_text(str(time.time() - 86401))
+    run_main(home, factory, FakeNotifier())
+    assert factory.entered == 2
+
+
+def test_backoff_routes_fallbacks_without_starting_the_model(home, make_file):
+    state(home).mkdir(parents=True)
+    (state(home) / route.BACKOFF_STAMP).write_text(str(time.time() - 60))
+    make_file(home / "Downloads/a.pdf", content="a")
+    factory, notifier = FakeFactory(lambda s, n: NLP), FakeNotifier()
+
+    run_main(home, factory, notifier)
+
+    assert factory.made == 0
+    assert (home / "Documents/Inbox/a.pdf").exists()
+    assert notifier.calls == ["summary"]
+    assert notifier.batches[0].ai_unavailable is True
+
+
+def test_start_notice_only_after_server_is_up(home, make_file):
+    make_file(home / "Downloads/stuff.zip")
+    events = []
+
+    class Factory(FakeFactory):
+        def __enter__(self):
+            events.append("enter")
+            return super().__enter__()
+
+    class Notifier(FakeNotifier):
+        def start(self):
+            events.append("start")
+            super().start()
+
+    run_main(home, Factory(), Notifier())
+    assert events == ["enter", "start"]
+
+
+def test_http_4xx_is_unsure_for_that_item_only(home, make_file):
+    make_file(home / "Downloads/a-bad.zip", content="a")
+    make_file(home / "Downloads/b-ngrams.pdf", content="b")
+
+    def answer(sample, n):
+        if "bad" in sample.splitlines()[0]:
+            raise classify.ItemRejected("llama-server HTTP 400")
+        return NLP
+
+    factory, notifier = FakeFactory(answer), FakeNotifier()
+    run_main(home, factory, notifier)
+
+    assert (home / "Downloads/a-bad.zip").exists()
+    assert (home / "Documents" / NLP / "b-ngrams.pdf").exists()
+    assert len(factory.samples) == 2  # the server was not given up on
+    assert rows(state(home) / "verdicts.jsonl") == []  # not cached
+    assert notifier.batches[0].ai_unavailable is False  # not an outage
+    assert not (state(home) / "unavailable-notified").exists()
+
+
+@pytest.mark.parametrize("error", [RuntimeError("tokenizer exploded"),
+                                   classify.ItemRejected("llama-server HTTP 400")])
+def test_item_failing_three_times_is_left_alone_until_it_changes(home, make_file, error):
+    bad = make_file(home / "Downloads/bad.zip", content="a")
+
+    def answer(sample, n):
+        raise error
+
+    factory = FakeFactory(answer)
+    notifiers = [FakeNotifier() for _ in range(5)]
+    for n in notifiers:
+        run_main(home, factory, n)
+
+    assert factory.entered == 3
+    assert len(factory.samples) == 3
+    assert _all_calls(*notifiers[3:]) == []
+    assert bad.exists()
+    assert rows(state(home) / "verdicts.jsonl") == []
+
+    later = time.time() - 600
+    os.utime(bad, (later, later))  # the item changed: try again
+    run_main(home, factory, FakeNotifier())
+    assert len(factory.samples) == 4
+
+
+def test_successful_verdict_resets_the_failure_count(home, make_file):
+    bad = make_file(home / "Downloads/bad.zip", content="a")
+    outcomes = iter([RuntimeError("1"), RuntimeError("2"), None, RuntimeError("3"),
+                     RuntimeError("4"), RuntimeError("5")])
+
+    def answer(sample, n):
+        out = next(outcomes)
+        if out is not None:
+            raise out
+        return None  # a genuine unsure, which is cached ...
+
+    factory = FakeFactory(answer)
+    for _ in range(3):
+        run_main(home, factory, FakeNotifier())
+    assert len(factory.samples) == 3
+    # ... so the cache now holds it; drop the cache to see the counter restart
+    (state(home) / "verdicts.jsonl").unlink()
+    for _ in range(3):
+        run_main(home, factory, FakeNotifier())
+    assert len(factory.samples) == 6
+    assert bad.exists()
+
+
+def test_symlinked_folder_in_downloads_is_never_an_item(home, make_file):
+    target = home / "Elsewhere/project"
+    make_file(target / "main.py")
+    old = time.time() - 3600
+    os.utime(target, (old, old))
+    (home / "Downloads/project-link").symlink_to(target, target_is_directory=True)
+    factory, notifier = FakeFactory(lambda s, n: "Development"), FakeNotifier()
+
+    run_main(home, factory, notifier)
+
+    assert (home / "Downloads/project-link").is_symlink()
+    assert factory.made == 0
+    assert notifier.calls == []
+
+
+def test_dir_rule_never_matches_a_symlink(tmp_path):
+    now = time.time()
+    real = tmp_path / "Foo.app"
+    real.mkdir()
+    link = tmp_path / "Bar.app"
+    link.symlink_to(real, target_is_directory=True)
+    rule = route.Rule(source=tmp_path, action="move", ext=frozenset({"app"}), kind="dir")
+    os.utime(real, (now - 3600, now - 3600))
+    assert route.rule_matches(rule, real, now)
+    assert not route.rule_matches(rule, link, now)

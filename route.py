@@ -206,7 +206,7 @@ def should_skip(path: Path, now: float) -> bool:
 
 def rule_matches(rule: Rule, path: Path, now: float) -> bool:
     if rule.kind == "dir":
-        if not path.is_dir():
+        if not path.is_dir() or path.is_symlink():
             return False
     elif not path.is_file():
         return False
@@ -380,6 +380,8 @@ def acquire_lock(path: Path):
 SUMMARY_CHARS = 300
 UNAVAILABLE_STAMP = "unavailable-notified"
 UNAVAILABLE_EVERY = 86400.0
+BACKOFF_STAMP = "model-backoff"
+BACKOFF_SECONDS = 86400.0
 
 
 def _call(notifier, method: str, *args) -> None:
@@ -401,15 +403,18 @@ class SmartRouter:
     """Decides where ``smart`` items go, starting the model at most once per run.
 
     A cached "unsure" verdict leaves the item in place without starting the
-    model. Once the model is unavailable (disabled, missing, failed to start or
-    died mid-run) every later item is treated as unsure and is not cached.
-    Disabled on purpose is not an outage: it is never flagged or notified.
-    An outage is flagged (``batch.ai_unavailable``) and notified at most once a
-    day.
+    model, and so does an unchanged item that failed ``memory.MAX_FAILURES``
+    times in a row. Once the model is unavailable (disabled, missing, failed
+    to start or died mid-run) every later item is treated as unsure and is not
+    cached. A server that fails to start is not tried again for
+    ``BACKOFF_SECONDS`` (live routing only). Disabled on purpose is not an
+    outage: it is never flagged or notified. An outage is flagged
+    (``batch.ai_unavailable``) and notified at most once a day.
     """
 
     def __init__(self, settings: SmartSettings, state: Path,
-                 classifier_factory=classify.LlamaServer, notifier=None, read_only=False):
+                 classifier_factory=classify.LlamaServer, notifier=None, read_only=False,
+                 now: float | None = None):
         self.settings = settings
         self.read_only = read_only  # planning: never write the verdict cache
         self.state = Path(state)
@@ -418,7 +423,9 @@ class SmartRouter:
         self.batch = Batch()
         model = settings.model_path
         self.disabled = not settings.enabled
-        self.permanent = self.disabled or model is None or not model.is_file()
+        self.backoff = not read_only and self._backoff_active(time.time() if now is None else now)
+        self.permanent = (self.disabled or model is None or not model.is_file()
+                          or self.backoff)
         self._down = self.permanent
         self.outage = False  # the model was needed but broken this run
         self._announced = False
@@ -426,8 +433,26 @@ class SmartRouter:
         self._ctx = None
         self._cands = None
         self._cache = None
+        self._failures = None
         self._corrections = 0
         self._picks: dict[Path, _Pick] = {}
+
+    def _backoff_active(self, now: float) -> bool:
+        try:
+            last = float((self.state / BACKOFF_STAMP).read_text().strip())
+        except (OSError, ValueError):
+            return False
+        return now - last < BACKOFF_SECONDS
+
+    def _start_failed(self, exc: BaseException) -> None:
+        """The server did not come up: back off for a day (live routing only)."""
+        if not self.read_only:
+            try:
+                self.state.mkdir(parents=True, exist_ok=True)
+                (self.state / BACKOFF_STAMP).write_text(f"{time.time()}\n")
+            except OSError:
+                pass
+        self._unavailable(exc)
 
     def candidates(self) -> list:
         if self._cands is None:
@@ -439,6 +464,30 @@ class SmartRouter:
             self._cache = memory.VerdictCache(self.state, compact=not self.read_only)
             self._corrections = memory.corrections_count(self.state)
         return self._cache
+
+    def failure_counter(self):
+        if self._failures is None:
+            self._failures = memory.FailureCounter(self.state, read_only=self.read_only)
+        return self._failures
+
+    def note_failure(self, path: Path) -> None:
+        """One more failure for this unchanged item (best effort)."""
+        try:
+            st = path.stat()
+            self.failure_counter().fail(path, st.st_size, st.st_mtime)
+        except OSError:
+            pass
+
+    def leave_alone(self, path: Path, rule: Rule) -> bool:
+        """True if routing ``path`` would certainly leave it in place without the model:
+        a folder outside ~/Downloads, a cached "unsure", or an item that keeps failing.
+        Cheap (a stat and in-memory lookups), so callers check it before costly work."""
+        if path.is_dir() and rule.source.resolve() != (Path.home() / "Downloads").resolve():
+            return True  # folders are sorted by the ~/Downloads rules only
+        st = path.stat()
+        if self.failure_counter().blocked(path, st.st_size, st.st_mtime):
+            return True
+        return self._verdict_cache().get(*self._cache_key(path))
 
     def _cache_key(self, path: Path):
         st = path.stat()
@@ -453,15 +502,16 @@ class SmartRouter:
 
     def _ensure_server(self):
         if self._server is None and not self._down:
-            if not self._announced:
-                self._announced = True
-                _call(self.notifier, "start")
             try:
                 ctx = self.factory(self.settings.model_path, state_dir=self.state)
                 self._server = ctx.__enter__()
                 self._ctx = ctx
             except Exception as exc:  # noqa: BLE001 - any start failure is an outage
-                self._unavailable(exc)
+                self._start_failed(exc)
+                return None
+            if not self._announced:  # "being sorted" only once the model is really up
+                self._announced = True
+                _call(self.notifier, "start")
         return self._server
 
     def _verdict(self, path: Path, sample: str):
@@ -477,19 +527,26 @@ class SmartRouter:
             return None
 
     def route(self, path: Path, rule: Rule, now: float) -> Action | None:
-        if path.is_dir() and rule.source.resolve() != (Path.home() / "Downloads").resolve():
-            return None  # folders are sorted by the ~/Downloads rules only
+        if self.leave_alone(path, rule):
+            return None
         cache = self._verdict_cache()
         key = self._cache_key(path)
-        if cache.get(*key):
-            return None
         if self._down:
             if not self.disabled:
                 self.outage = True
             verdict, sample = None, ""
         else:
             sample = extract.sample(path)
-            verdict = self._verdict(path, sample)
+            try:
+                verdict = self._verdict(path, sample)
+            except classify.ItemRejected as exc:
+                # refused for this item only: unsure, never cached, not an outage
+                print(f"ERROR  {path}: {exc}", file=sys.stderr)
+                self.note_failure(path)
+                return self.fallback(path, rule, "AI sorting could not read this item",
+                                     sample[:SUMMARY_CHARS])
+            if verdict is not None:
+                self.failure_counter().clear(path)
         summary = sample[:SUMMARY_CHARS]
         if verdict is not None and verdict.folder is not None:
             cand = next((c for c in self.candidates() if c.name == verdict.folder), None)
@@ -596,6 +653,8 @@ def plan_item(path: Path, config: Config, smart: SmartRouter | None, now: float,
     source = (source or path.parent).resolve()
     rules = [r for r in config.rules if r.source.resolve() == source]
     if path.is_dir():
+        if path.is_symlink():
+            return None  # a link to a folder is never a folder item
         if not any(r.kind == "dir" for r in rules) or path.resolve() in own_dest_dirs(config.rules):
             return None
     elif not path.is_file():
@@ -616,6 +675,7 @@ def plan_item(path: Path, config: Config, smart: SmartRouter | None, now: float,
         raise
     except Exception as exc:  # noqa: BLE001 - contained to this item
         (on_error or (lambda e: print(f"ERROR  {path}: {e!r}", file=sys.stderr)))(exc)
+        smart.note_failure(path)  # an item that always fails is not retried forever
         action = smart.fallback(path, rule, "error while sorting")
     if action is None or (action.dst.name == path.name
                           and action.dst.parent.resolve() == path.parent.resolve()):
@@ -680,6 +740,8 @@ def process_dir(
             if rule is None or rule.action != "smart":
                 raise
             _item_error(child, exc, dry_run, log_path)  # left in place, nothing cached
+            if smart is not None:
+                smart.note_failure(child)
     return done
 
 

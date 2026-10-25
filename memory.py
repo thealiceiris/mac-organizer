@@ -21,6 +21,8 @@ LOCATE_TIMEOUT = 20.0
 PLACEMENTS = "placements.jsonl"
 CORRECTIONS = "corrections.jsonl"
 VERDICTS = "verdicts.jsonl"
+FAILURES = "failures.jsonl"
+MAX_FAILURES = 3
 
 
 def _read(path: Path) -> list[dict]:
@@ -219,3 +221,51 @@ class VerdictCache:
             return
         self.rows[str(path)] = {"key": key, "path": str(path), "verdict": "unsure", "at": time.time()}
         self._save()
+
+
+class FailureCounter:
+    """Consecutive smart-sort failures per unchanged item, keyed by (path, size, mtime).
+
+    After ``MAX_FAILURES`` failures in a row the item is left alone, like a
+    cached "unsure", until it changes (or a verdict succeeds and clears it).
+    Entries older than 30 days are dropped. ``read_only`` never writes.
+    """
+
+    def __init__(self, state: Path, read_only: bool = False):
+        self.file = Path(state) / FAILURES
+        self.read_only = read_only
+        cutoff = time.time() - WINDOW
+        self.rows: dict[str, dict] = {}
+        for r in _read(self.file):
+            if isinstance(r.get("path"), str) and isinstance(r.get("count"), int) \
+                    and isinstance(r.get("at"), (int, float)) and r["at"] >= cutoff:
+                self.rows[r["path"]] = r
+
+    def _row(self, path, size, mtime) -> dict | None:
+        r = self.rows.get(str(path))
+        if r is not None and r.get("size") == size and r.get("mtime") == mtime:
+            return r
+        return None
+
+    def count(self, path, size, mtime) -> int:
+        r = self._row(path, size, mtime)
+        return r["count"] if r is not None else 0
+
+    def blocked(self, path, size, mtime) -> bool:
+        return self.count(path, size, mtime) >= MAX_FAILURES
+
+    def fail(self, path, size, mtime) -> int:
+        n = self.count(path, size, mtime) + 1
+        if not self.read_only:
+            self.rows[str(path)] = {"path": str(path), "size": size, "mtime": mtime,
+                                    "count": n, "at": time.time()}
+            self._save()
+        return n
+
+    def clear(self, path) -> None:
+        if not self.read_only and self.rows.pop(str(path), None) is not None:
+            self._save()
+
+    def _save(self) -> None:
+        with _locked(self.file):
+            _rewrite(self.file, list(self.rows.values()))

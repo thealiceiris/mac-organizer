@@ -38,6 +38,10 @@ class ServerUnavailable(Exception):
     """The model or llama-server cannot be used for the rest of this run."""
 
 
+class ItemRejected(Exception):
+    """llama-server refused this one request (HTTP 4xx): unsure for this item only."""
+
+
 @dataclass(frozen=True)
 class Candidate:
     name: str
@@ -357,6 +361,9 @@ class LlamaServer:
             with self._urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
+            if 400 <= exc.code < 500:
+                # this request was refused (too long, bad input): this item only
+                raise ItemRejected(f"llama-server HTTP {exc.code}") from exc
             # a server-side failure, not the model's judgement: never a cacheable "unsure"
             raise ServerUnavailable(f"llama-server HTTP {exc.code}") from exc
         except (urllib.error.URLError, OSError) as exc:
