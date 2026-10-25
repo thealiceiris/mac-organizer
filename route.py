@@ -553,6 +553,9 @@ class SmartRouter:
             return server.classify(sample, self.candidates(), examples, self.settings.threshold)
         except classify.ServerUnavailable as exc:
             self._unavailable(exc)
+            # an outage for this run; if this very item keeps taking the server
+            # down, it is left alone after a few tries like any failing item
+            self.note_failure(path)
             return None
 
     def route(self, path: Path, rule: Rule, now: float) -> Action | None:

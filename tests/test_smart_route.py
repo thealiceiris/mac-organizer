@@ -909,3 +909,19 @@ def test_dry_run_never_reaps(home, make_file, monkeypatch):
     route.main(["--dry-run", "--rules", str(home / "rules.toml"), "--log", str(home / "a.log"),
                 "--lock", str(home / "lock")], classifier_factory=FakeFactory(),
                notifier=FakeNotifier())
+
+
+def test_item_that_crashes_the_server_every_time_is_left_alone_after_three(home, make_file):
+    bad = make_file(home / "Downloads/bad.zip", content="a")
+
+    def answer(sample, n):
+        raise ServerUnavailable("llama-server exited with code -11")
+
+    factory = FakeFactory(answer)
+    notifiers = [FakeNotifier() for _ in range(4)]
+    for n in notifiers:
+        run_main(home, factory, n)
+
+    assert factory.entered == 3  # the 4th sweep does not load the model for it
+    assert notifiers[3].calls == []
+    assert bad.exists()
