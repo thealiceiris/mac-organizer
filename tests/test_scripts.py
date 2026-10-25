@@ -182,3 +182,42 @@ def test_repo_checkout_is_untouched_by_the_script_tests(env):
     assert _run(env["repo"] / "install.sh", env).returncode == 0
 
     assert {p.name for p in REPO.iterdir()} == before
+
+
+def _fake_python_bin(env) -> Path:
+    """A PATH dir holding only python3 (a symlink to the real one) and launchctl."""
+    import sys
+    only = env["bin_dir"] / "only"
+    only.mkdir()
+    (only / "python3").symlink_to(sys.executable)
+    return only
+
+
+def test_install_warns_for_missing_tools(env):
+    only = _fake_python_bin(env)
+    env["vars"]["LAUNCHCTL"] = str(_launchctl_stub(env["bin_dir"]))
+    env["vars"]["PATH"] = f"{only}:/usr/bin:/bin"
+    env["vars"]["MAC_ORGANIZER_TOOL_DIRS"] = str(env["bin_dir"] / "nowhere")
+
+    result = _run(env["repo"] / "install.sh", env)
+
+    assert result.returncode == 0, result.stderr
+    assert "brew install llama.cpp poppler terminal-notifier" in result.stdout + result.stderr
+
+
+def test_install_lists_only_missing_tools(env):
+    only = _fake_python_bin(env)
+    extra = env["bin_dir"] / "extra"
+    extra.mkdir()
+    _stub(extra / "pdftotext", "#!/bin/bash\n")
+    _stub(extra / "llama-server", "#!/bin/bash\n")
+    env["vars"]["LAUNCHCTL"] = str(_launchctl_stub(env["bin_dir"]))
+    env["vars"]["PATH"] = f"{only}:/usr/bin:/bin"
+    env["vars"]["MAC_ORGANIZER_TOOL_DIRS"] = str(extra)  # found via the fallback dirs
+
+    result = _run(env["repo"] / "install.sh", env)
+
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "brew install terminal-notifier" in out
+    assert "poppler" not in out and "llama.cpp" not in out

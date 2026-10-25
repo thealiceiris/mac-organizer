@@ -14,3 +14,11 @@ def test_readme_covers_key_topics():
         "python",
     ]:
         assert topic.lower() in text, topic
+
+
+def test_readme_documents_v2():
+    text = README.read_text()
+    for topic in ["rules.local.toml", "--backlog", "Documents/Keys", "eject",
+                  "Changing the model", "terminal-notifier"]:
+        assert topic in text, topic
+    assert "content analysis" not in text.lower()
