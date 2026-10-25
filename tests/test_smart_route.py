@@ -792,3 +792,78 @@ def test_dir_rule_never_matches_a_symlink(tmp_path):
     os.utime(real, (now - 3600, now - 3600))
     assert route.rule_matches(rule, real, now)
     assert not route.rule_matches(rule, link, now)
+
+
+# ---------------------------------------------------------------- final review I2
+
+
+def _spy_settle(monkeypatch):
+    walked = []
+    real = route.dir_is_settled
+
+    def spy(path, now, *a, **kw):
+        walked.append(Path(path).name)
+        return real(path, now, *a, **kw)
+
+    monkeypatch.setattr(route, "dir_is_settled", spy)
+    return walked
+
+
+def test_cached_unsure_folder_is_not_walked(home, make_file, monkeypatch):
+    make_file(home / "Downloads/project/main.py")
+    old = time.time() - 3600
+    os.utime(home / "Downloads/project", (old, old))
+    run_main(home, FakeFactory(), FakeNotifier())  # unsure: cached
+    assert [r["path"] for r in rows(state(home) / "verdicts.jsonl")] == [
+        str(home / "Downloads/project")]
+
+    walked = _spy_settle(monkeypatch)
+    factory = FakeFactory()
+    run_main(home, factory, FakeNotifier())
+
+    assert walked == []
+    assert factory.made == 0
+
+
+def test_failing_folder_is_not_walked_once_blocked(home, make_file, monkeypatch):
+    make_file(home / "Downloads/project/main.py")
+    old = time.time() - 3600
+    os.utime(home / "Downloads/project", (old, old))
+
+    def answer(sample, n):
+        raise RuntimeError("boom")
+
+    for _ in range(3):
+        run_main(home, FakeFactory(answer), FakeNotifier())
+    walked = _spy_settle(monkeypatch)
+    run_main(home, FakeFactory(answer), FakeNotifier())
+    assert walked == []
+
+
+def test_desktop_folders_without_a_matching_rule_are_not_walked(home, make_file, monkeypatch):
+    make_file(home / "Desktop/stuff/a.txt")
+    (home / "Desktop/Foo.app").mkdir()
+    old = time.time() - 3600
+    for d in ("stuff", "Foo.app"):
+        os.utime(home / "Desktop" / d, (old, old))
+    walked = _spy_settle(monkeypatch)
+
+    run_main(home, FakeFactory(), FakeNotifier(), home / "Desktop")
+
+    assert walked == ["Foo.app"]  # only the folder a rule matched
+    assert (home / "Downloads/Installers/Foo.app").is_dir()
+    assert (home / "Desktop/stuff").is_dir()
+
+
+def test_settle_walk_prunes_vendored_dirs_and_is_capped(tmp_path, make_file, monkeypatch):
+    d = tmp_path / "proj"
+    for vendored in ("node_modules", ".git", ".venv", "venv", "__pycache__", "build",
+                     "dist", ".next"):
+        make_file(d / vendored / "deep/inner/recent.js", age_seconds=5)
+        old = time.time() - 3600
+        os.utime(d / vendored, (old, old))
+    make_file(d / "src/main.py")
+    for p in (d / "src", d):
+        os.utime(p, (time.time() - 3600,) * 2)
+    assert route.dir_is_settled(d, time.time()) is True
+    assert route.DIR_WALK_LIMIT == 5_000

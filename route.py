@@ -166,8 +166,11 @@ def own_dest_dirs(rules: list[Rule]) -> set[Path]:
 
 MIN_AGE_SECONDS = 60
 DIR_QUIET_SECONDS = 300
-DIR_WALK_LIMIT = 20_000
+DIR_WALK_LIMIT = 5_000
 SKIP_SUFFIXES = frozenset({".crdownload", ".part", ".download", ".tmp"})
+# tool-managed trees: never walked into (their own entry is still checked)
+VENDORED_DIRS = frozenset({"node_modules", ".git", ".venv", "venv", "__pycache__", "build",
+                           "dist", ".next"})
 
 
 def _age_seconds(path: Path, now: float) -> float:
@@ -177,8 +180,9 @@ def _age_seconds(path: Path, now: float) -> float:
 def dir_is_settled(path: Path, now: float, quiet_seconds: int = DIR_QUIET_SECONDS) -> bool:
     """True if nothing inside ``path`` (nor ``path``) changed in ``quiet_seconds``.
 
-    The walk is capped at 20,000 entries; past that only the directory's own
-    mtime is trusted.
+    Vendored trees (``VENDORED_DIRS``: node_modules, .git, build output, …)
+    are not walked into. The walk is capped at ``DIR_WALK_LIMIT`` entries; past
+    that only what was seen so far is trusted.
     """
     newest = path.stat().st_mtime
     seen = 0
@@ -186,11 +190,12 @@ def dir_is_settled(path: Path, now: float, quiet_seconds: int = DIR_QUIET_SECOND
         for name in dirs + files:
             seen += 1
             if seen > DIR_WALK_LIMIT:
-                return now - path.stat().st_mtime >= quiet_seconds
+                return now - newest >= quiet_seconds
             try:
                 newest = max(newest, os.lstat(os.path.join(root, name)).st_mtime)
             except OSError:
                 continue  # vanished mid-walk: something is still changing
+        dirs[:] = [d for d in dirs if d not in VENDORED_DIRS]
     return now - newest >= quiet_seconds
 
 
@@ -657,13 +662,25 @@ def plan_item(path: Path, config: Config, smart: SmartRouter | None, now: float,
             return None  # a link to a folder is never a folder item
         if not any(r.kind == "dir" for r in rules) or path.resolve() in own_dest_dirs(config.rules):
             return None
+        # cheapest checks first: the settle walk runs only for a folder that
+        # a rule matched and that is not going to be left alone anyway
+        if path.name.startswith(".") or path.suffix.lower() in SKIP_SUFFIXES:
+            return None
+        rule = match_rule(path, rules, now)
+        if rule is None:
+            return None
+        if rule.action == "smart" and smart is not None and smart.leave_alone(path, rule):
+            return None
+        if not dir_is_settled(path, now):
+            return None
     elif not path.is_file():
         return None
-    if should_skip(path, now):
-        return None
-    rule = match_rule(path, rules, now)
-    if rule is None:
-        return None
+    else:
+        if should_skip(path, now):
+            return None
+        rule = match_rule(path, rules, now)
+        if rule is None:
+            return None
     if rule.action != "smart":
         action = plan_action(path, rule, now)
         return None if action is None else PlannedLine(action, rule, _rule_reason(rule))
