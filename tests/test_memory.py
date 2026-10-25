@@ -66,9 +66,55 @@ def test_item_moved_outside_documents_is_ignored(tmp_path):
     f.unlink()
     assert memory.detect_corrections(state, cs, NOW + 10, locate=lambda n: []) == []
     assert memory.corrections_count(state) == 0
-    # resolved without correction: placement compacted away
     pf = state / "placements.jsonl"
-    assert not pf.exists() or pf.read_text().strip() == ""
+    # kept during the Spotlight grace period, then resolved without a correction
+    assert "missing_since" in pf.read_text()
+    assert memory.detect_corrections(state, cs, NOW + 3600, locate=lambda n: []) == []
+    assert pf.read_text().strip() != ""
+    assert memory.detect_corrections(state, cs, NOW + 25 * 3600, locate=lambda n: []) == []
+    assert pf.read_text().strip() == ""
+    assert memory.corrections_count(state) == 0
+
+
+def test_late_indexed_move_is_still_a_correction(tmp_path):
+    state, docs = tmp_path / "st", tmp_path / "Documents"
+    cs = cands(docs, "Finance", "Development")
+    f = place(state, docs, "Finance", "late.txt")
+    f.rename(docs / "Development" / "late.txt")
+    assert memory.detect_corrections(state, cs, NOW + 10, locate=lambda n: []) == []
+    out = memory.detect_corrections(state, cs, NOW + 3600, locate=locator(docs))
+    assert [c["right"] for c in out] == ["Development"]
+
+
+def test_placement_appended_during_detect_survives_compaction(tmp_path):
+    state, docs = tmp_path / "st", tmp_path / "Documents"
+    cs = cands(docs, "Finance", "Development")
+    f = place(state, docs, "Finance", "a.txt")
+    f.rename(docs / "Development" / "a.txt")
+
+    def locate(name):
+        place(state, docs, "Finance", "fresh.txt", now=NOW + 5)
+        return locator(docs)(name)
+
+    out = memory.detect_corrections(state, cs, NOW + 10, locate=locate)
+    assert len(out) == 1
+    assert "fresh.txt" in (state / "placements.jsonl").read_text()
+
+
+def test_verdict_cache_compacts_per_path_and_expires(tmp_path):
+    import time
+    state = tmp_path / "st"
+    vc = memory.VerdictCache(state)
+    for n in range(5):
+        vc.put_unsure(Path("/x/a.pdf"), 10, float(n), "h", 0)
+    vc.put_unsure(Path("/x/b.pdf"), 10, 1.0, "h", 0)
+    assert len((state / "verdicts.jsonl").read_text().splitlines()) == 2
+    assert vc.get(Path("/x/a.pdf"), 10, 4.0, "h", 0) and not vc.get(Path("/x/a.pdf"), 10, 0.0, "h", 0)
+    old = {"key": "k", "path": "/x/old", "verdict": "unsure", "at": time.time() - 31 * 86400}
+    with open(state / "verdicts.jsonl", "a") as fh:
+        fh.write(json.dumps(old) + "\n")
+    memory.VerdictCache(state)
+    assert "/x/old" not in (state / "verdicts.jsonl").read_text()
 
 
 def test_placements_older_than_30_days_ignored(tmp_path):

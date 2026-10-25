@@ -5,14 +5,18 @@ skipped, never fatal. Nothing here touches the network.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 WINDOW = 30 * 86400.0
+MISSING_GRACE = 24 * 3600.0  # Spotlight may lag behind a fresh Finder move
 LOCATE_TIMEOUT = 20.0
 PLACEMENTS = "placements.jsonl"
 CORRECTIONS = "corrections.jsonl"
@@ -35,10 +39,26 @@ def _read(path: Path) -> list[dict]:
     return rows
 
 
-def _append(path: Path, row: dict) -> None:
+@contextlib.contextmanager
+def _locked(path: Path):
+    """Exclusive lock on a sibling lock file; held only for short read-modify-write steps."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    with open(path.with_name(path.name + ".lock"), "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lk, fcntl.LOCK_UN)
+
+
+def _sig(row: dict) -> str:
+    return json.dumps(row, sort_keys=True, ensure_ascii=False)
+
+
+def _append(path: Path, row: dict) -> None:
+    with _locked(path):
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def _rewrite(path: Path, rows: list[dict]) -> None:
@@ -102,7 +122,9 @@ def detect_corrections(state: Path, cands, now: float, locate=mdfind_locate) -> 
     if not pfile.exists():
         return []
     keep, new = [], []
-    for row in _read(pfile):
+    snapshot = _read(pfile)
+    seen = {_sig(r) for r in snapshot}  # before rows are mutated below
+    for row in snapshot:
         try:
             at, path, file = float(row["at"]), Path(row["path"]), row["file"]
             folder = row["folder"]
@@ -111,9 +133,19 @@ def detect_corrections(state: Path, cands, now: float, locate=mdfind_locate) -> 
         if now - at > WINDOW:
             continue
         if os.path.lexists(path):
+            row.pop("missing_since", None)
             keep.append(row)  # still where we put it
             continue
         now_at = _find(row, locate)
+        if now_at is None:
+            # Not found: maybe not indexed yet. Resolve only after a grace period.
+            since = row.get("missing_since")
+            if not isinstance(since, (int, float)):
+                row["missing_since"] = now
+                keep.append(row)
+            elif now - since < MISSING_GRACE:
+                keep.append(row)
+            continue
         if now_at is not None:
             right = _owner(now_at, cands)
             if right is not None and right != folder:
@@ -122,7 +154,10 @@ def detect_corrections(state: Path, cands, now: float, locate=mdfind_locate) -> 
         # found elsewhere, moved outside Documents, or deleted: resolved
     for c in new:
         _append(state / CORRECTIONS, c)
-    _rewrite(pfile, keep)
+    with _locked(pfile):
+        # rows appended by record_placement while we were locating survive
+        keep.extend(r for r in _read(pfile) if _sig(r) not in seen)
+        _rewrite(pfile, keep)
     return new
 
 
@@ -148,11 +183,26 @@ def select_examples(state: Path, name: str, k: int = 10) -> list[dict]:
 
 
 class VerdictCache:
-    """Remembers "unsure" verdicts so unchanged items are not re-asked."""
+    """Remembers "unsure" verdicts so unchanged items are not re-asked.
+
+    One entry per path (the newest); entries older than 30 days are dropped.
+    """
 
     def __init__(self, state: Path):
         self.file = Path(state) / VERDICTS
-        self.keys = {r["key"] for r in _read(self.file) if isinstance(r.get("key"), str)}
+        cutoff = time.time() - WINDOW
+        self.rows: dict[str, dict] = {}
+        rows = _read(self.file)
+        for r in rows:
+            if isinstance(r.get("key"), str) and isinstance(r.get("path"), str) \
+                    and isinstance(r.get("at"), (int, float)) and r["at"] >= cutoff:
+                self.rows[r["path"]] = r  # later lines win
+        if self.file.exists() and len(self.rows) != len(rows):
+            self._save()
+
+    def _save(self) -> None:
+        with _locked(self.file):
+            _rewrite(self.file, list(self.rows.values()))
 
     @staticmethod
     def _key(path, size, mtime, cands_hash, corrections) -> str:
@@ -160,10 +210,12 @@ class VerdictCache:
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
     def get(self, path, size, mtime, cands_hash, corrections_count) -> bool:
-        return self._key(path, size, mtime, cands_hash, corrections_count) in self.keys
+        r = self.rows.get(str(path))
+        return r is not None and r["key"] == self._key(path, size, mtime, cands_hash, corrections_count)
 
     def put_unsure(self, path, size, mtime, cands_hash, corrections_count) -> None:
         key = self._key(path, size, mtime, cands_hash, corrections_count)
-        if key not in self.keys:
-            self.keys.add(key)
-            _append(self.file, {"key": key, "path": str(path), "verdict": "unsure"})
+        if self.get(path, size, mtime, cands_hash, corrections_count):
+            return
+        self.rows[str(path)] = {"key": key, "path": str(path), "verdict": "unsure", "at": time.time()}
+        self._save()
