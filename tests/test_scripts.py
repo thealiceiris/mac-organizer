@@ -23,6 +23,7 @@ REPO_FILES = [
     "memory.py",
     "batch.py",
     "notify.py",
+    "disks.py",
     "plist.py",
     "rules.default.toml",
     "rules.local.default.toml",

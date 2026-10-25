@@ -18,6 +18,7 @@ from pathlib import Path
 
 import classify
 import dedupe as dupes
+import disks
 import extract
 import fsops
 import memory
@@ -754,6 +755,12 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
                 router.close()  # the model is never left running
         if router is not None:
             router.finish(now)
+        if not args.dry_run:
+            try:
+                disks.eject_stale(default_state_dir(), now,
+                                  log=lambda verb, src, dst: _log(log_path, verb, src, dst))
+            except Exception as exc:  # noqa: BLE001 - ejecting never fails the run
+                print(f"ERROR  ejecting disk images: {exc!r}", file=sys.stderr)
         return 0
     finally:
         _restore_sigterm(previous_sigterm)

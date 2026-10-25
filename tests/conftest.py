@@ -16,3 +16,12 @@ def make_file():
         return path
 
     return _make
+
+
+@pytest.fixture(autouse=True)
+def _no_real_hdiutil(request, monkeypatch):
+    """route.main must never reach the real hdiutil from tests."""
+    import disks
+
+    if request.module.__name__ != "test_disks":
+        monkeypatch.setattr(disks, "eject_stale", lambda *a, **k: [])
