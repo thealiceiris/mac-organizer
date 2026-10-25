@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 /.venv/
 /rules.toml
+/.worktrees/
+.superpowers/
