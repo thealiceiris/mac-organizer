@@ -162,31 +162,24 @@ def _plan_one(path: Path, config, smart, now: float, source: Path, notes: list[s
     return [Line("MOVE", path, planned.action.dst, planned.reason, planned.folder or "")]
 
 
-def _digest(path: Path) -> str | None:
-    try:
-        if path.is_dir() and not path.is_symlink():
-            return dupes.tree_digest(path)
-        return dupes.file_digest(path)
-    except OSError:
-        return None
-
-
 def _settle_duplicates(lines: list[Line]) -> list[Line]:
-    """Identical items in one run: the first MOVE stays a MOVE, the rest become TRASH."""
-    arrivals: dict[Path, dict[str, Path]] = {}  # dest_dir -> {digest: planned path}
+    """Identical items in one run: the first MOVE stays a MOVE, the rest become TRASH.
+
+    Earlier MOVEs into the same folder are simulated arrivals; they are compared
+    with the same cheap checks (size, layout) before anything is hashed.
+    """
+    arrivals: dict[Path, list[tuple[Path, Path]]] = {}  # dest_dir -> [(src, planned path)]
     out: list[Line] = []
     for ln in lines:
         if ln.action != "MOVE":
             out.append(ln)
             continue
-        extra = arrivals.setdefault(ln.dst.parent, {})
+        extra = arrivals.setdefault(ln.dst.parent, [])
         twin = dupes.find_identical(ln.src, ln.dst.parent, extra=extra)
         if twin is not None:
             out.append(Line("TRASH", ln.src, twin, f"identical to {twin}"))
             continue
-        digest = _digest(ln.src)
-        if digest is not None:
-            extra[digest] = ln.dst
+        extra.append((ln.src, ln.dst))
         out.append(ln)
     return out
 
@@ -360,18 +353,7 @@ def read_report(report: Path) -> tuple[float, list[Line]]:
 
 
 def _identical(a: Path, b: Path) -> bool:
-    try:
-        if a.resolve() == b.resolve():
-            return False  # never trash the only copy
-        a_dir, b_dir = a.is_dir() and not a.is_symlink(), b.is_dir() and not b.is_symlink()
-        if a_dir != b_dir:
-            return False
-        if a_dir:
-            return dupes.tree_digest(a) == dupes.tree_digest(b)
-        return (a.is_file() and b.is_file() and a.stat().st_size == b.stat().st_size
-                and dupes.file_digest(a) == dupes.file_digest(b))
-    except OSError:
-        return False
+    return dupes.identical(a, b)  # never the same path: the only copy is never trashed
 
 
 def _claim_group_dir(planned: Path) -> Path:

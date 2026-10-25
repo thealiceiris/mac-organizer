@@ -603,3 +603,29 @@ def test_cli_malformed_report_moves_nothing(home, make_file, capsys):
     assert run_main(home, "--backlog", "--apply", report) == 2
     assert "nothing moved" in capsys.readouterr().err
     assert (home / "Downloads/a.png").exists()
+
+
+# ---------------------------------------------------------------- final review
+
+
+def test_plan_and_apply_never_hash_big_unrelated_sibling_folders(home, make_file, monkeypatch):
+    """C1: a folder headed for ~/Documents/Development is not compared byte by byte
+    with every project already there."""
+    for i in range(20):
+        make_file(home / f"Documents/Development/big/src/f{i}.py", content="y" * 100)
+    make_file(home / "Documents/Development/big/README.md", content="r")
+    make_file(home / "Downloads/proj/README.md", content="r")
+    make_file(home / "Downloads/proj/src/a.py", content="a")
+    os.utime(home / "Downloads/proj", (time.time() - 3600,) * 2)
+    os.utime(home / "Downloads/proj/src", (time.time() - 3600,) * 2)
+    import dedupe
+    hashed = []
+    real = dedupe.file_digest
+    monkeypatch.setattr(dedupe, "file_digest", lambda p: hashed.append(p) or real(p))
+
+    report = do_plan(home, FakeFactory(lambda name: "Development"), "Downloads")
+    assert by_src(report)["proj"][0] == "MOVE"
+    do_apply(home, report)
+
+    assert (home / "Documents/Development/proj/src/a.py").exists()
+    assert not any("big" in str(p) for p in hashed)
