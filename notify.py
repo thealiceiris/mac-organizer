@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,7 @@ TITLE = "mac-organizer"
 START_TEXT = "Files are being sorted…"
 UNAVAILABLE_TEXT = "AI sorting unavailable — files will wait in Misc"
 REPORT_KEEP_DAYS = 30
+SUGGEST_GROUP = "mac-organizer-suggest"
 FALLBACK_PATHS = ("/opt/homebrew/bin/terminal-notifier", "/usr/local/bin/terminal-notifier")
 
 
@@ -66,6 +68,10 @@ def _report_line(e) -> str:
     return f"{line}  — {e.reason}" if e.reason else line
 
 
+def suggest_text(s) -> str:
+    return f"{len(s.items)} files in Misc look like {s.name}. Click to review."
+
+
 def _applescript_quote(text: str) -> str:
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
@@ -82,6 +88,28 @@ class Notifier:
 
     def unavailable(self) -> None:
         self._send(UNAVAILABLE_TEXT)
+
+    def suggest(self, s, command: list[str]) -> bool:
+        """Offer one suggestion; clicking it runs ``command``. True if it was sent.
+
+        There is no osascript fallback: a notification that cannot be clicked
+        cannot be answered, so it is not sent and the daily limit is not used.
+        """
+        try:
+            tn = self._terminal_notifier()
+            if not tn:
+                return False
+            cmd = [tn, "-title", TITLE, "-message", suggest_text(s),
+                   "-execute", shlex.join(command), "-group", SUGGEST_GROUP]
+            result = self.runner(cmd, capture_output=True, timeout=10, check=False)
+            if getattr(result, "returncode", 0):
+                print(f"suggestion notification failed: exit {result.returncode}",
+                      file=sys.stderr)
+                return False
+            return True
+        except Exception as exc:  # noqa: BLE001 - a notification never fails the run
+            print(f"suggestion notification failed: {exc!r}", file=sys.stderr)
+            return False
 
     def summary(self, batch: Batch) -> Path:
         report = self._write_report(batch)

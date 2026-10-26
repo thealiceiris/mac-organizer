@@ -46,6 +46,8 @@ class Notifier(Protocol):
 
     def unavailable(self) -> None: ...
 
+    def suggest(self, s, command: list[str]) -> bool: ...
+
 
 class NullNotifier:
     """Used when no notifier is configured: every call is a no-op."""
@@ -58,3 +60,6 @@ class NullNotifier:
 
     def unavailable(self) -> None:
         pass
+
+    def suggest(self, s, command: list[str]) -> bool:
+        return False

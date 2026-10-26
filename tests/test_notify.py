@@ -131,3 +131,47 @@ def test_old_reports_pruned(tmp_path):
     os.utime(old, (t, t))
     notify.Notifier(tmp_path, runner=Fake(), which=lambda n: None).summary(_big())
     assert not old.exists() and new.exists()
+
+
+def _suggestion(n=4):
+    from suggest import Suggestion
+    return Suggestion("tax", "Taxes", [f"/m/t{i}.pdf" for i in range(n)], None)
+
+
+def test_notifier_suggest_uses_execute_and_exact_copy(tmp_path):
+    import shlex
+    fake = Fake()
+    n = notify.Notifier(tmp_path, runner=fake, which=lambda name: "/bin/terminal-notifier")
+    command = ["/usr/bin/python3", "/opt/mac organizer/route.py", "--review-suggestion", "tax"]
+    assert n.suggest(_suggestion(), command) is True
+    cmd = fake.calls[0][0]
+    assert cmd[0] == "/bin/terminal-notifier"
+    assert cmd[cmd.index("-message") + 1] == "4 files in Misc look like Taxes. Click to review."
+    assert cmd[cmd.index("-execute") + 1] == shlex.join(command)
+    assert cmd[cmd.index("-group") + 1] == "mac-organizer-suggest"
+    assert "-open" not in cmd
+
+
+def test_notifier_suggest_without_terminal_notifier_or_on_failure(tmp_path):
+    fake = Fake()
+    n = notify.Notifier(tmp_path, runner=fake, which=lambda name: None)
+    n._fallback_paths = ()
+    assert n.suggest(_suggestion(), ["x"]) is False
+    assert fake.calls == []  # no osascript fallback: it could not be clicked
+
+    def failing(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 1)
+
+    n = notify.Notifier(tmp_path, runner=failing, which=lambda name: "/bin/tn")
+    assert n.suggest(_suggestion(), ["x"]) is False
+
+    def boom(cmd, **kw):
+        raise OSError("gone")
+
+    n = notify.Notifier(tmp_path, runner=boom, which=lambda name: "/bin/tn")
+    assert n.suggest(_suggestion(), ["x"]) is False
+
+
+def test_null_notifier_suggest_is_false():
+    from batch import NullNotifier
+    assert NullNotifier().suggest(_suggestion(), ["x"]) is False

@@ -8,6 +8,7 @@ import fnmatch
 import os
 import re
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -18,11 +19,13 @@ from pathlib import Path
 
 import classify
 import dedupe as dupes
+import dialog
 import disks
 import extract
 import fsops
 import memory
 import notify
+import suggest
 import topics
 from batch import Batch, NullNotifier
 from fsops import DestDirMissing, candidate_names, move_no_clobber  # noqa: F401  (re-exported)
@@ -139,7 +142,7 @@ def load_config(rules_path: Path, local_path: Path | None) -> Config:
         expand=tuple(str(x) for x in smart.get("expand", ["Academics"])),
     )
     sug = {**shipped.get("suggest", {}), **local.get("suggest", {})}
-    suggest = SuggestSettings(
+    suggest_settings = SuggestSettings(
         min_items=int(sug.get("min_items", 3)),
         snooze_days=int(sug.get("snooze_days", 7)),
         expire_days=int(sug.get("expire_days", 7)),
@@ -148,7 +151,7 @@ def load_config(rules_path: Path, local_path: Path | None) -> Config:
     setup_settings = SetupSettings(
         starter_folders=tuple(str(x) for x in stp.get("starter_folders", DEFAULT_STARTER_FOLDERS)))
     return Config(rules=_parse_rules(local) + _parse_rules(shipped), smart=settings,
-                  suggest=suggest, setup=setup_settings)
+                  suggest=suggest_settings, setup=setup_settings)
 
 
 def load_rules(path: Path) -> list[Rule]:
@@ -895,7 +898,8 @@ def _restore_sigterm(previous) -> None:
     signal.signal(signal.SIGTERM, signal.SIG_DFL if previous is None else previous)
 
 
-def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=None) -> int:
+def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=None,
+         runner=None) -> int:
     parser = argparse.ArgumentParser(description="Route files in drop-zone folders.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
@@ -909,8 +913,30 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
                         help="plan a one-off clean-up of PATHS into a report (moves nothing)")
     parser.add_argument("--apply", type=Path, default=None, metavar="REPORT",
                         help="with --backlog: perform the lines left in REPORT")
+    parser.add_argument("--suggestions", action="store_true",
+                        help="list the folder suggestions waiting for an answer")
+    parser.add_argument("--accept-suggestion", metavar="KEY", default=None,
+                        help="create the suggested folder and move its files there")
+    parser.add_argument("--name", default=None, help="with --accept-suggestion: the folder name")
+    parser.add_argument("--decline-suggestion", metavar="KEY", default=None,
+                        help="not now (ask again later), or with --never: never ask")
+    parser.add_argument("--never", action="store_true",
+                        help="with --decline-suggestion: never suggest this again")
+    parser.add_argument("--review-suggestion", metavar="KEY", default=None,
+                        help="show the review dialog for a suggestion (what a click runs)")
     parser.add_argument("paths", nargs="*", type=Path)
     args = parser.parse_args(argv)
+    answering = [f for f in ("accept_suggestion", "decline_suggestion", "review_suggestion")
+                 if getattr(args, f) is not None]
+    if args.name is not None and args.accept_suggestion is None:
+        parser.error("--name works only with --accept-suggestion")
+    if args.never and args.decline_suggestion is None:
+        parser.error("--never works only with --decline-suggestion")
+    if answering or args.suggestions:
+        if len(answering) + args.suggestions > 1 or args.dry_run or args.backlog \
+                or args.apply is not None or args.paths:
+            parser.error("the suggestion options work alone")
+        return _suggestion_cli(args, runner or subprocess.run)
     if args.apply is not None and not args.backlog:
         parser.error("--apply works only with --backlog")
     if args.backlog and args.apply is not None and args.paths:
@@ -992,10 +1018,226 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
                                   log=lambda verb, src, dst: _log(log_path, verb, src, dst))
             except Exception as exc:  # noqa: BLE001 - ejecting never fails the run
                 print(f"ERROR  ejecting disk images: {exc!r}", file=sys.stderr)
+            try:
+                _offer_suggestion(config, router.notifier, now)
+            except Exception as exc:  # noqa: BLE001 - suggesting never fails the run
+                print(f"ERROR  offering a folder suggestion: {exc!r}", file=sys.stderr)
         return 0
     finally:
         _restore_sigterm(previous_sigterm)
         os.close(lock_fd)  # releases the flock
+
+
+# ---------------------------------------------------------------- suggestions
+
+LOCK_WAIT = 60.0  # seconds an answer waits for a running sweep
+LOCK_POLL = 0.5
+BUSY_TEXT = "mac-organizer is busy, try again shortly"
+STALE_TEXT = "That suggestion was already answered or has expired."
+_BUSY = object()
+
+
+def review_command(key: str) -> list[str]:
+    """What a click on the suggestion runs. launchd has no PATH: absolute paths only."""
+    return [sys.executable, str(Path(__file__).resolve()), "--review-suggestion", key]
+
+
+def _misc(config: Config) -> Path:
+    return config.smart.documents_root / "Misc"
+
+
+def _offer_suggestion(config: Config, notifier, now: float) -> None:
+    """At most one suggestion a day; it counts only once the notification was sent.
+
+    Never starts the model and never creates anything.
+    """
+    send = getattr(notifier, "suggest", None)
+    if send is None:
+        return
+    state = default_state_dir()
+    s = suggest.due(state, _misc(config), config.smart.documents_root, config.smart.expand,
+                    config.suggest, now)
+    if s is not None and send(s, review_command(s.key)):
+        suggest.mark_sent(state, s, now)
+
+
+def _files(n: int) -> str:
+    return f"{n} file{'' if n == 1 else 's'}"
+
+
+def _find(config: Config, key: str, now: float, allow_due: bool) -> suggest.Suggestion | None:
+    """The live suggestion for ``key``; an expired one is gone (it counts as "Not now").
+
+    With ``allow_due``, a suggestion that is due but was never sent (no
+    terminal-notifier) counts too, so it can be answered from the terminal.
+    """
+    state = default_state_dir()
+    for s in suggest.pending(state, now, config.suggest):
+        if s.key == key:
+            return s
+    if allow_due:
+        s = suggest.due(state, _misc(config), config.smart.documents_root, config.smart.expand,
+                        config.suggest, now)
+        if s is not None and s.key == key:
+            return s
+    return None
+
+
+def _locked(lock_path: Path, fn):
+    """Run ``fn`` holding the route lock, waiting up to LOCK_WAIT. ``_BUSY`` if still held."""
+    deadline = time.monotonic() + LOCK_WAIT
+    fd = acquire_lock(lock_path)
+    while fd is None and time.monotonic() < deadline:
+        time.sleep(LOCK_POLL)
+        fd = acquire_lock(lock_path)
+    if fd is None:
+        return _BUSY
+    try:
+        return fn()
+    finally:
+        os.close(fd)
+
+
+def _outcome(result: suggest.AcceptResult, existing: str | None = None) -> str:
+    if result.created is None and not result.moved:
+        text = result.error or "nothing was moved"
+        return text[:1].upper() + text[1:]
+    if result.created is not None:
+        text = f'Created "{result.created.name}" and moved {_files(len(result.moved))}'
+    else:
+        text = f'Moved {_files(len(result.moved))} to "{existing}"'
+    return f"{text} ({result.error})" if result.error else text
+
+
+def _suggestion_cli(args, runner) -> int:
+    log_path = args.log or default_log_path()
+    lock_path = args.lock or default_lock_path()
+    try:
+        config = load_config(args.rules, args.rules.parent / "rules.local.toml")
+    except FileNotFoundError:
+        print(f"rules file not found at {args.rules} — run ./install.sh first", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"rules not loaded: {exc}", file=sys.stderr)
+        return 1
+    state = default_state_dir()
+    misc, docs, expand = _misc(config), config.smart.documents_root, config.smart.expand
+
+    def log(verb, src, dst):
+        _log(log_path, verb, src, dst)
+
+    def say(text: str, ok: bool) -> int:
+        print(text)
+        if args.review_suggestion is not None:
+            dialog.notify(text, runner)
+        return 0 if ok else 1
+
+    def busy() -> int:
+        print(BUSY_TEXT, file=sys.stderr)
+        dialog.notify(BUSY_TEXT, runner)
+        return 1
+
+    def stale(key: str) -> int:
+        print(f"no such suggestion: {key}")
+        if args.review_suggestion is not None:
+            dialog.notify(STALE_TEXT, runner)
+        return 1
+
+    if args.suggestions:
+        now = time.time()
+        live = suggest.pending(state, now, config.suggest)
+        s = suggest.due(state, misc, docs, expand, config.suggest, now)
+        for item in live + ([s] if s is not None else []):
+            name = " ".join(item.name.split())  # one line, three columns
+            print(f"{item.key}\t{name}\t{_files(len(item.items))}")
+        return 0
+
+    if args.decline_suggestion is not None:
+        key = args.decline_suggestion
+
+        def decline():
+            now = time.time()
+            if _find(config, key, now, allow_due=True) is None:
+                return None
+            suggest.decline(state, key, now, config.suggest, never=args.never)
+            return key
+
+        done = _locked(lock_path, decline)
+        if done is _BUSY:
+            return busy()
+        if done is None:
+            return stale(key)
+        print(f"{key}: never suggested again" if args.never else f"{key}: not now")
+        return 0
+
+    if args.accept_suggestion is not None:
+        key = args.accept_suggestion
+
+        def accept():
+            now = time.time()
+            s = _find(config, key, now, allow_due=True)
+            if s is None:
+                return None
+            if s.sent_at is None:  # due, never sent: answering it uses today's offer
+                suggest.mark_sent(state, s, now)
+            name = args.name if args.name is not None else s.name
+            return suggest.accept(state, key, name, misc, docs, expand, log)
+
+        result = _locked(lock_path, accept)
+        if result is _BUSY:
+            return busy()
+        if result is None:
+            return stale(key)
+        if result.similar:
+            return say(f'A similar folder "{result.similar}" exists; nothing was created.', False)
+        return say(_outcome(result), result.created is not None and not result.error)
+
+    # --review-suggestion: what a click on the notification runs
+    key = args.review_suggestion
+    found = _locked(lock_path, lambda: _find(config, key, time.time(), allow_due=False))
+    if found is _BUSY:
+        return busy()
+    if found is None:
+        return stale(key)
+    # The dialogs are shown without the lock, so a sweep is never held up by them.
+    button, name = dialog.review(found, runner)
+    if button == "cancel":
+        return 0
+
+    def answer():
+        now = time.time()
+        if _find(config, key, now, allow_due=False) is None:
+            return None
+        if button == "create":
+            return suggest.accept(state, key, name, misc, docs, expand, log)
+        suggest.decline(state, key, now, config.suggest, never=(button == "never"))
+        return button
+
+    result = _locked(lock_path, answer)
+    if result is _BUSY:
+        return busy()
+    if result is None:
+        return stale(key)
+    if isinstance(result, str):
+        print(f"{key}: never suggested again" if result == "never" else f"{key}: not now")
+        return 0
+    if result.similar:
+        existing = result.similar
+        if not dialog.confirm_similar(existing, runner):
+            return 0
+
+        def into_existing():
+            if _find(config, key, time.time(), allow_due=False) is None:
+                return None
+            return suggest.accept_into_existing(state, key, existing, misc, docs, log)
+
+        result = _locked(lock_path, into_existing)
+        if result is _BUSY:
+            return busy()
+        if result is None:
+            return stale(key)
+        return say(_outcome(result, existing), bool(result.moved) and not result.error)
+    return say(_outcome(result), result.created is not None and not result.error)
 
 
 def _backlog_plan(paths: list[Path], config: Config, classifier_factory) -> int:
