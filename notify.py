@@ -69,7 +69,7 @@ def _report_line(e) -> str:
 
 
 def suggest_text(s) -> str:
-    return f"{len(s.items)} files in Misc look like {s.name}. Click to review."
+    return f"{len(s.items)} files in Misc look like {s.name}. Open Folder Suggestions to review."
 
 
 def _applescript_quote(text: str) -> str:

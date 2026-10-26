@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -215,6 +217,46 @@ def offer_starter_folders(
     return made
 
 
+APP_NAME = "Folder Suggestions.app"
+
+
+def default_apps_dir() -> Path:
+    return Path("~/Applications").expanduser()
+
+
+def install_app(python: str, route_py: Path, apps_dir: Path | None = None,
+                runner=subprocess.run) -> Path | None:
+    """Build ~/Applications/Folder Suggestions.app, which runs ``route.py --review-pending``.
+
+    Opening it is how the user reviews a suggestion, so nothing depends on a
+    notification click working. Returns the app, or None if it could not be built.
+    """
+    target = (apps_dir or default_apps_dir()) / APP_NAME
+    command = shlex.join([python, str(route_py), "--review-pending"])
+    escaped = command.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'do shell script "{escaped}"'
+    osacompile = os.environ.get("MAC_ORGANIZER_OSACOMPILE", "/usr/bin/osacompile")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            shutil.rmtree(target)
+        result = runner([osacompile, "-o", str(target), "-e", script],
+                        capture_output=True, text=True, check=False, timeout=60)
+    except Exception as exc:  # noqa: BLE001 - the app is a convenience; setup goes on
+        print(f"Folder Suggestions app not built: {exc}", file=sys.stderr)
+        return None
+    if getattr(result, "returncode", 1) != 0 or not target.exists():
+        print(f"Folder Suggestions app not built: {getattr(result, 'stderr', '')}", file=sys.stderr)
+        return None
+    return target
+
+
+def remove_app(apps_dir: Path | None = None) -> None:
+    target = (apps_dir or default_apps_dir()) / APP_NAME
+    if target.exists():
+        shutil.rmtree(target)
+
+
 def remove_agent_plists() -> None:
     """Delete our agent plists so launchd cannot start the sorter at next login."""
     for plist_path in launch_agents_dir().glob(f"{LABEL_PREFIX}.*.plist"):
@@ -254,6 +296,9 @@ def main(argv: list[str] | None = None) -> None:
         remove_agent_plists()
     elif want_agents:
         agents = install_agents(python, route_py, screenshot_dir)
+        app = install_app(python, route_py)
+        if app is not None:
+            print(f"app: {app}")
     copy_vault_template(REPO / "vault-template", Path("~/Notes").expanduser())
 
     print(f"screenshot dir: {screenshot_dir}")

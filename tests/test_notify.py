@@ -146,7 +146,7 @@ def test_notifier_suggest_uses_execute_and_exact_copy(tmp_path):
     assert n.suggest(_suggestion(), command) is True
     cmd = fake.calls[0][0]
     assert cmd[0] == "/bin/terminal-notifier"
-    assert cmd[cmd.index("-message") + 1] == "4 files in Misc look like Taxes. Click to review."
+    assert cmd[cmd.index("-message") + 1] == "4 files in Misc look like Taxes. Open Folder Suggestions to review."
     assert cmd[cmd.index("-execute") + 1] == shlex.join(command)
     assert cmd[cmd.index("-group") + 1] == "mac-organizer-suggest"
     assert "-open" not in cmd

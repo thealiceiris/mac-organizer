@@ -89,6 +89,13 @@ def confirm_similar(existing: str, runner=subprocess.run) -> bool:
     return _parse(out)[0] == _CONTROL.sub(" ", use)
 
 
+def info(message: str, runner=subprocess.run) -> None:
+    """A dialog with just an OK button (opened by the user, e.g. from the app). Never raises."""
+    script = (f"display dialog {quote(message)} with title {quote(TITLE)} "
+              f"buttons {{{quote('OK')}}} default button {quote('OK')} giving up after 600")
+    _run(script, runner, 660)
+
+
 def notify(message: str, runner=subprocess.run) -> None:
     """A plain notification (no click action). Never raises."""
     script = f"display notification {quote(message)} with title {quote(TITLE)}"

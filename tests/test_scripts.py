@@ -79,6 +79,9 @@ def env(tmp_path, repo_copy):
             **os.environ,
             "HOME": str(home),
             "LAUNCHCTL_LOG": str(log),
+            # a stand-in osacompile that just creates the .app folder
+            "MAC_ORGANIZER_OSACOMPILE": str(_stub(
+                bin_dir / "osacompile", '#!/bin/bash\nwhile [ "$1" != "-o" ]; do shift; done\nmkdir -p "$2"\n')),
         },
     }
 
@@ -105,9 +108,13 @@ def test_install_then_uninstall(env):
     assert (env["repo"] / "rules.toml").exists()
     assert not (env["home"] / "rules.toml").exists()
 
+    app = env["home"] / "Applications/Folder Suggestions.app"
+    assert app.is_dir()
+
     uninstall = _run(env["repo"] / "uninstall.sh", env)
     assert uninstall.returncode == 0, uninstall.stderr
     assert _agents(env) == []
+    assert not app.exists()
 
 
 def test_install_is_idempotent_and_falls_back_when_bootstrap_fails(env):

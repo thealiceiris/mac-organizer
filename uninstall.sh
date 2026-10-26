@@ -11,4 +11,6 @@ for plist in "$AGENTS_DIR"/com.mac-organizer.*.plist; do
   rm -f "$plist"
 done
 
-echo "Removed mac-organizer launchd agents. Files, rules.toml, and logs are untouched."
+rm -rf "$HOME/Applications/Folder Suggestions.app"
+
+echo "Removed mac-organizer launchd agents and the Folder Suggestions app. Files, rules.toml, and logs are untouched."

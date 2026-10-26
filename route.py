@@ -932,10 +932,12 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
                         help="with --decline-suggestion: never suggest this again")
     parser.add_argument("--review-suggestion", metavar="KEY", default=None,
                         help="show the review dialog for a suggestion (what a click runs)")
+    parser.add_argument("--review-pending", action="store_true",
+                        help="review the waiting folder suggestion (what the Folder Suggestions app runs)")
     parser.add_argument("paths", nargs="*", type=Path)
     args = parser.parse_args(argv)
     answering = [f for f in ("accept_suggestion", "decline_suggestion", "review_suggestion")
-                 if getattr(args, f) is not None]
+                 if getattr(args, f) is not None] + (["review_pending"] if args.review_pending else [])
     if args.name is not None and args.accept_suggestion is None:
         parser.error("--name works only with --accept-suggestion")
     if args.never and args.decline_suggestion is None:
@@ -1042,6 +1044,7 @@ LOCK_WAIT = 60.0  # seconds the CLI, and a click before its dialog, wait for a r
 ANSWER_LOCK_WAIT = 15 * 60.0  # once the user has answered the dialog, wait this long
 LOCK_POLL = 0.5
 BUSY_TEXT = "mac-organizer is busy, try again shortly"
+NO_SUGGESTIONS_TEXT = "No folder suggestions right now."
 STALE_TEXT = "That suggestion was already answered or has expired."
 _BUSY = object()
 
@@ -1226,6 +1229,27 @@ def _suggestion_cli(args, runner) -> int:
         if result.similar:
             return say(f'A similar folder "{result.similar}" exists; nothing was created.', False)
         return say(_outcome(result), result.created is not None and not result.error)
+
+    if args.review_pending:
+        # the Folder Suggestions app: review whatever is waiting, or say there is nothing
+        def pick():
+            now = time.time()
+            waiting = suggest.pending(state, now, config.suggest)
+            if waiting:
+                return waiting[0].key
+            s = suggest.due(state, misc, docs, expand, config.suggest, now)
+            if s is None:
+                return None
+            suggest.mark_sent(state, s, now)
+            return s.key
+        key = _locked(lock_path, pick)
+        if key is _BUSY:
+            return busy()
+        if key is None:
+            print(NO_SUGGESTIONS_TEXT)
+            dialog.info(NO_SUGGESTIONS_TEXT, runner)
+            return 0
+        args.review_suggestion = key
 
     # --review-suggestion: what a click on the notification runs
     key = args.review_suggestion
