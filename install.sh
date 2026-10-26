@@ -55,8 +55,8 @@ if { [ -t 0 ] || [ -n "${MAC_ORGANIZER_FORCE_TTY:-}" ]; } && [ -z "${MAC_ORGANIZ
   fi
   if [ "$DL_COUNT" -gt 50 ] || [ "$DOC_COUNT" -gt 20 ]; then
     echo "You have $DL_COUNT items in Downloads and $DOC_COUNT loose files in Documents."
-    echo "Recommended: preview first, nothing moves until you approve:"
-    echo "  python3 setup.py && python3 route.py --backlog ~/Downloads ~/Documents"
+    echo "Recommended: answer no, then preview; nothing moves until you approve:"
+    echo "  python3 route.py --backlog ~/Downloads ~/Documents"
     printf 'Load the background sorter now? [y/N] '
     ANSWER=""
     read -r ANSWER || ANSWER=""
@@ -79,7 +79,7 @@ if [ "$LOAD_AGENTS" = 0 ]; then
   # no agent plists left behind: launchd would load them at next login
   "$PYTHON" "$REPO/setup.py" --no-agents
 else
-  "$PYTHON" "$REPO/setup.py"
+  "$PYTHON" "$REPO/setup.py" --agents
 fi
 
 if [ "$LOAD_AGENTS" = 0 ]; then

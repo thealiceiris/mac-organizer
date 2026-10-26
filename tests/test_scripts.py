@@ -3,6 +3,7 @@ import plistlib
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -311,3 +312,45 @@ def test_install_quiet_mac_is_not_asked(env):
     assert result.returncode == 0, result.stderr
     assert "Load the background sorter" not in result.stdout
     assert "bootstrap" in env["log"].read_text()
+
+
+def _setup(env, *args) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(env["repo"] / "setup.py"), *args],
+        env=env["vars"], capture_output=True, text=True, stdin=subprocess.DEVNULL,
+    )
+
+
+def test_plain_setup_writes_no_agents_and_removes_none(env):
+    """C1: `python3 setup.py` (the README's preview step) never arranges a sorter start."""
+    result = _setup(env)
+    assert result.returncode == 0, result.stderr
+    assert _agents(env) == []
+    assert (env["repo"] / "rules.toml").exists()
+    # an existing install's agents are left exactly as they are
+    agents = env["home"] / "Library/LaunchAgents"
+    agents.mkdir(parents=True)
+    (agents / "com.mac-organizer.sweep.plist").write_text("x")
+    result = _setup(env)
+    assert result.returncode == 0, result.stderr
+    assert [p.name for p in _agents(env)] == ["com.mac-organizer.sweep.plist"]
+    assert (agents / "com.mac-organizer.sweep.plist").read_text() == "x"
+
+
+def test_setup_agents_flag_writes_and_no_agents_removes(env):
+    result = _setup(env, "--agents")
+    assert result.returncode == 0, result.stderr
+    assert 4 <= len(_agents(env)) <= 5
+    result = _setup(env, "--no-agents")
+    assert result.returncode == 0, result.stderr
+    assert _agents(env) == []
+
+
+def test_install_busy_mac_yes_writes_and_loads_agents(env):
+    env["vars"]["LAUNCHCTL"] = str(_launchctl_stub(env["bin_dir"]))
+    env["vars"]["MAC_ORGANIZER_FORCE_TTY"] = "1"
+    _busy_home(env)
+    result = _run_input(env["repo"] / "install.sh", env, "y\n")
+    assert result.returncode == 0, result.stderr
+    assert 4 <= len(_agents(env)) <= 5
+    assert env["log"].read_text().count("bootstrap") == len(_agents(env))

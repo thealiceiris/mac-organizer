@@ -72,3 +72,14 @@ def test_readme_documents_suggestions_and_expand():
         assert needle in section, needle
     assert "python3 route.py --backlog ~/Downloads ~/Documents" in text.split("## Requirements")[0]
     assert "never creates folders" not in text
+
+
+def test_readme_setup_py_never_starts_the_sorter():
+    """C1: plain setup.py writes no agents; the README must not say otherwise."""
+    text = README.read_text()
+    assert "writes the agents but does not load them" not in text
+    assert "would load at your next login" not in text
+    upgrade = _section(text, "Upgrading from v1")
+    assert "writes no `launchd` agents" in upgrade
+    quick = _section(text, "Quick start")
+    assert "writes no launchd agents" in quick

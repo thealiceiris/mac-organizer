@@ -222,7 +222,16 @@ def remove_agent_plists() -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    no_agents = "--no-agents" in (sys.argv[1:] if argv is None else argv)
+    """Folders, rules and the vault. launchd agents only on request:
+
+    ``--agents`` writes them (install.sh, after a yes), ``--no-agents`` removes
+    them (install.sh, after a no). Plain ``python3 setup.py`` touches no agent,
+    so it can never arrange for the sorter to start at the next login.
+    """
+    args = sys.argv[1:] if argv is None else argv
+    want_agents, no_agents = "--agents" in args, "--no-agents" in args
+    if want_agents and no_agents:
+        raise SystemExit("setup.py: --agents and --no-agents cannot be combined")
     python = sys.executable
     route_py = REPO / "route.py"
     screenshot_dir = detect_screenshot_dir()
@@ -240,10 +249,10 @@ def main(argv: list[str] | None = None) -> None:
         names, Path("~/Documents").expanduser(), state_dir(),
         interactive=sys.stdin.isatty(),
     )
+    agents: list[Path] = []
     if no_agents:
         remove_agent_plists()
-        agents = []
-    else:
+    elif want_agents:
         agents = install_agents(python, route_py, screenshot_dir)
     copy_vault_template(REPO / "vault-template", Path("~/Notes").expanduser())
 
@@ -254,6 +263,9 @@ def main(argv: list[str] | None = None) -> None:
     print(f"rules.local.toml: {'created' if wrote_local else 'left as-is (already exists)'}")
     for path in agents:
         print(f"agent: {path}")
+    if not want_agents:
+        print("launchd agents: none written (the background sorter is not started;"
+              " ./install.sh loads it)")
     for path in starters:
         print(f"starter folder: {path}")
     print(f"vault: {Path('~/Notes').expanduser()}")

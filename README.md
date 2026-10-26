@@ -29,7 +29,7 @@ them into the right folder in `~/Documents`, entirely on your Mac.
 4. **Messy Downloads or Documents? Preview before anything moves (optional).**
 
    ```bash
-   python3 setup.py                     # folders + config, does NOT start sorting
+   python3 setup.py                     # folders + config only: writes no launchd agents
    # edit rules.local.toml: model_path = "~/models/<your-model>.gguf"
    python3 route.py --backlog ~/Downloads ~/Documents   # writes a report, moves nothing
    # open the report: delete a line, or put # in front of it, to veto it
@@ -111,7 +111,8 @@ cd ~/.mac-organizer
    the state directory; detects your screenshot location; generates
    `rules.toml` and a personal `rules.local.toml`; installs the `launchd`
    agents (one per watched folder plus a 10-minute sweep — five, or four when
-   your screenshots already land in a watched folder); and copies the Obsidian vault template to `~/Notes`
+   your screenshots already land in a watched folder) — only when you said yes
+   to loading the sorter, or were not asked; and copies the Obsidian vault template to `~/Notes`
    (never overwriting existing files).
 3. Loads the agents with `launchctl`.
 4. Prints a dry-run preview of what the router would do right now (smart-sort
@@ -142,9 +143,10 @@ is not asked again. Change the names under `[setup] starter_folders` in
 
 **Already have a lot of files.** If `~/Downloads` has more than 50 items or
 `~/Documents` more than 20 loose files, `./install.sh` tells you and asks
-`Load the background sorter now? [y/N]`. Answering no sets everything up but
-leaves the sorter off; run `./install.sh` again when you are ready. Preview
-first, then approve:
+`Load the background sorter now? [y/N]`. Answering no sets up folders and
+rules but writes no `launchd` agents, so nothing starts, not even at your next
+login; run `./install.sh` again when you are ready. Preview first, then
+approve (`python3 setup.py` on its own never writes or removes agents either):
 
 ```bash
 python3 setup.py
@@ -337,13 +339,12 @@ leaves those items alone until they change.
 ## Upgrading from v1
 
 Do the first v2 clean-up as a reviewed backlog, with the agents stopped so
-nothing moves behind your back (do it in one session: the agents written in
-step 2 would load at your next login):
+nothing moves behind your back:
 
 1. Stop the v1 agents: `./uninstall.sh` (your files and rules stay).
 2. Run `python3 setup.py`. It backs up your existing `rules.toml` to
    `rules.toml.v1.bak`, generates the v2 rules and a `rules.local.toml`
-   (it writes the agents but does not load them). Re-apply your own edits
+   (it writes no `launchd` agents, so nothing starts). Re-apply your own edits
    through `rules.local.toml`.
 3. Set `model_path` under `[smart_sort]` in `rules.local.toml`.
 4. Plan the backlog, review the report, then apply it:
