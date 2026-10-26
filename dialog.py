@@ -50,15 +50,22 @@ def _parse(out: str) -> tuple[str | None, str]:
     return button, text if found else ""
 
 
-def review(s, runner=subprocess.run) -> tuple[str, str]:
-    """Ask about one suggestion: ``(button, name)``, button one of create/not_now/never/cancel."""
+def review(s, runner=subprocess.run, error: str | None = None,
+           name: str | None = None) -> tuple[str, str]:
+    """Ask about one suggestion: ``(button, name)``, button one of create/not_now/never/cancel.
+
+    Re-shown after a name that could not be used: ``error`` is the first line
+    and ``name`` (what the user typed) is prefilled instead of the suggestion.
+    """
     names = [Path(p).name for p in s.items]
     listed = names[:MAX_LISTED]
     if len(names) > MAX_LISTED:
         listed.append(f"and {len(names) - MAX_LISTED} more")
-    body = _lines(f'Create a "{s.name}" folder in Documents?', "", *listed)
+    lead = [error, ""] if error else []
+    body = _lines(*lead, f'Create a "{s.name}" folder in Documents?', "", *listed)
     buttons = ", ".join(quote(b) for b in (NOT_NOW, NEVER, CREATE))
-    script = (f"display dialog {body} with title {quote(TITLE)} default answer {quote(s.name)} "
+    answer = s.name if name is None else name
+    script = (f"display dialog {body} with title {quote(TITLE)} default answer {quote(answer)} "
               f"buttons {{{buttons}}} default button {quote(CREATE)}")
     out = _run(script, runner, DIALOG_TIMEOUT)
     if out is None:

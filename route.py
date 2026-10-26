@@ -7,6 +7,7 @@ import fcntl
 import fnmatch
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -1037,7 +1038,8 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
 
 # ---------------------------------------------------------------- suggestions
 
-LOCK_WAIT = 60.0  # seconds an answer waits for a running sweep
+LOCK_WAIT = 60.0  # seconds the CLI, and a click before its dialog, wait for a running sweep
+ANSWER_LOCK_WAIT = 15 * 60.0  # once the user has answered the dialog, wait this long
 LOCK_POLL = 0.5
 BUSY_TEXT = "mac-organizer is busy, try again shortly"
 STALE_TEXT = "That suggestion was already answered or has expired."
@@ -1090,9 +1092,9 @@ def _find(config: Config, key: str, now: float, allow_due: bool) -> suggest.Sugg
     return None
 
 
-def _locked(lock_path: Path, fn):
-    """Run ``fn`` holding the route lock, waiting up to LOCK_WAIT. ``_BUSY`` if still held."""
-    deadline = time.monotonic() + LOCK_WAIT
+def _locked(lock_path: Path, fn, wait: float | None = None):
+    """Run ``fn`` holding the route lock, waiting up to ``wait`` (LOCK_WAIT). ``_BUSY`` if held."""
+    deadline = time.monotonic() + (LOCK_WAIT if wait is None else wait)
     fd = acquire_lock(lock_path)
     while fd is None and time.monotonic() < deadline:
         time.sleep(LOCK_POLL)
@@ -1113,7 +1115,27 @@ def _outcome(result: suggest.AcceptResult, existing: str | None = None) -> str:
         text = f'Created "{result.created.name}" and moved {_files(len(result.moved))}'
     else:
         text = f'Moved {_files(len(result.moved))} to "{existing}"'
-    return f"{text} ({result.error})" if result.error else text
+    notes = [result.error] if result.error else []
+    if result.gone:
+        notes.append(f"{result.gone} of the listed files are no longer in Misc")
+    return f"{text} ({'; '.join(notes)})" if notes else text
+
+
+def _dq(text: str) -> str:
+    """``text`` as a double-quoted shell word (what the busy message tells the user to type)."""
+    return '"' + re.sub(r'(["\\$`])', r"\\\1", text) + '"'
+
+
+def _answer_command(key: str, button: str, name: str) -> str:
+    """The terminal command that gives the same answer as the dialog did."""
+    cmd = f"python3 {shlex.quote(str(Path(__file__).resolve()))}"
+    if button == "create":
+        return f"{cmd} --accept-suggestion {shlex.quote(key)} --name {_dq(name.strip())}"
+    if button == "never":
+        return f"{cmd} --decline-suggestion {shlex.quote(key)} --never"
+    if button == "not_now":
+        return f"{cmd} --decline-suggestion {shlex.quote(key)}"
+    return f"{cmd} --review-suggestion {shlex.quote(key)}"
 
 
 def _suggestion_cli(args, runner) -> int:
@@ -1152,8 +1174,14 @@ def _suggestion_cli(args, runner) -> int:
 
     if args.suggestions:
         now = time.time()
-        live = suggest.pending(state, now, config.suggest)
-        s = suggest.due(state, misc, docs, expand, config.suggest, now)
+        fd = acquire_lock(lock_path)  # never waits: a busy sweep just means a read-only list
+        try:
+            write = fd is not None
+            live = suggest.pending(state, now, config.suggest, write=write)
+            s = suggest.due(state, misc, docs, expand, config.suggest, now, write=write)
+        finally:
+            if fd is not None:
+                os.close(fd)
         for item in live + ([s] if s is not None else []):
             name = " ".join(item.name.split())  # one line, three columns
             print(f"{item.key}\t{name}\t{_files(len(item.items))}")
@@ -1206,45 +1234,67 @@ def _suggestion_cli(args, runner) -> int:
         return busy()
     if found is None:
         return stale(key)
+    # only the files the user is asked about, and only those still there
+    found = suggest.Suggestion(found.key, found.name,
+                               [p for p in found.items if Path(p).exists()], found.sent_at)
+
+    def answered(fn, button: str, name: str):
+        """Apply an answer: the user has decided, so wait out a long sweep."""
+        result = _locked(lock_path, fn, wait=ANSWER_LOCK_WAIT)
+        if result is _BUSY:
+            text = (f"mac-organizer is still busy, so your answer was not applied. "
+                    f"To apply it, run: {_answer_command(key, button, name)}")
+            print(text)
+            dialog.notify(text, runner)
+        return result
+
     # The dialogs are shown without the lock, so a sweep is never held up by them.
-    button, name = dialog.review(found, runner)
-    if button == "cancel":
-        return 0
-
-    def answer():
-        now = time.time()
-        if _find(config, key, now, allow_due=False) is None:
-            return None
-        if button == "create":
-            return suggest.accept(state, key, name, misc, docs, expand, log)
-        suggest.decline(state, key, now, config.suggest, never=(button == "never"))
-        return button
-
-    result = _locked(lock_path, answer)
-    if result is _BUSY:
-        return busy()
-    if result is None:
-        return stale(key)
-    if isinstance(result, str):
-        print(f"{key}: never suggested again" if result == "never" else f"{key}: not now")
-        return 0
-    if result.similar:
-        existing = result.similar
-        if not dialog.confirm_similar(existing, runner):
+    # A name that cannot be used brings the dialog back, error first, until the
+    # user creates a folder, says Not now or Never, or cancels.
+    error, typed = None, None
+    while True:
+        button, name = dialog.review(found, runner, error=error, name=typed)
+        if button == "cancel":
             return 0
 
-        def into_existing():
-            if _find(config, key, time.time(), allow_due=False) is None:
+        def answer():
+            now = time.time()
+            if _find(config, key, now, allow_due=False) is None:
                 return None
-            return suggest.accept_into_existing(state, key, existing, misc, docs, log)
+            if button == "create":
+                return suggest.accept(state, key, name, misc, docs, expand, log)
+            suggest.decline(state, key, now, config.suggest, never=(button == "never"))
+            return button
 
-        result = _locked(lock_path, into_existing)
+        result = answered(answer, button, name)
         if result is _BUSY:
-            return busy()
+            return 1
         if result is None:
             return stale(key)
-        return say(_outcome(result, existing), bool(result.moved) and not result.error)
-    return say(_outcome(result), result.created is not None and not result.error)
+        if isinstance(result, str):
+            print(f"{key}: never suggested again" if result == "never" else f"{key}: not now")
+            return 0
+        if result.bad_name:
+            error, typed = _outcome(result), name
+            continue
+        if result.similar:
+            existing = result.similar
+            if not dialog.confirm_similar(existing, runner):
+                error, typed = f'A similar folder "{existing}" exists. Choose another name.', name
+                continue
+
+            def into_existing():
+                if _find(config, key, time.time(), allow_due=False) is None:
+                    return None
+                return suggest.accept_into_existing(state, key, existing, misc, docs, log)
+
+            result = answered(into_existing, "review", name)
+            if result is _BUSY:
+                return 1
+            if result is None:
+                return stale(key)
+            return say(_outcome(result, existing), bool(result.moved) and not result.error)
+        return say(_outcome(result), result.created is not None and not result.error)
 
 
 def _backlog_plan(paths: list[Path], config: Config, classifier_factory) -> int:

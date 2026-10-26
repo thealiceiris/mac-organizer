@@ -179,14 +179,18 @@ belong together you get one notification at most every 24 hours:
 
 Clicking opens a dialog, `Create a "Taxes" folder in Documents?`, with the
 buttons `Not now` (asks again after 7 days), `Never suggest this` and
-`Create & move` (the default). The folder is created, and the files still in
-Misc are moved into it, only on `Create & move`. An unanswered suggestion
+`Create & move` (the default). The folder is created, and the listed files
+still in Misc are moved into it, only on `Create & move` (a file that arrived
+after the notification waits for a later suggestion). A name that cannot be
+used brings the dialog back with the reason on top. If a sort is running, the
+answer waits for it; should it still be busy after 15 minutes, the
+notification shows the exact command to run instead. An unanswered suggestion
 expires after 7 days and counts as `Not now`. Without `terminal-notifier` there
 is no notification; list and answer suggestions from the terminal:
 
 ```bash
 python3 route.py --suggestions
-python3 route.py --accept-suggestion <topic>
+python3 route.py --accept-suggestion <topic> --name "<folder name>"   # quote a two-word topic
 python3 route.py --decline-suggestion <topic>          # not now
 python3 route.py --decline-suggestion <topic> --never  # never suggest this
 ```

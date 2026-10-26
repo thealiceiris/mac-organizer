@@ -21,8 +21,11 @@ class Osascript:
     """Fake ``subprocess.run`` for osascript: scripted dialog answers, recorded notifications."""
 
     def __init__(self, review="button returned:Create & move, text returned:Taxes",
-                 similar=None, review_code=0):
+                 similar=None, review_code=0, on_review=None):
+        # ``review``/``similar``: one answer for every dialog, or a list answered in
+        # turn (an exhausted review list is Esc, an exhausted similar list is Cancel)
         self.review, self.similar, self.review_code = review, similar, review_code
+        self.on_review = on_review
         self.dialogs, self.notes = [], []
 
     def __call__(self, cmd, **kw):
@@ -32,9 +35,17 @@ class Osascript:
             self.notes.append(script)
             return subprocess.CompletedProcess(cmd, 0, "", "")
         self.dialogs.append(script)
-        if "A similar folder" in script:
-            out = self.similar or "button returned:Cancel"
-            return subprocess.CompletedProcess(cmd, 0, out + "\n", "")
+        if "A similar folder" in script and "Move the files there instead?" in script:
+            out = self.similar
+            if isinstance(out, list):
+                out = out.pop(0) if out else None
+            return subprocess.CompletedProcess(cmd, 0, (out or "button returned:Cancel") + "\n", "")
+        if self.on_review is not None:
+            self.on_review()
+        if isinstance(self.review, list):
+            if not self.review:
+                return subprocess.CompletedProcess(cmd, 1, "", "User canceled.")
+            return subprocess.CompletedProcess(cmd, 0, self.review.pop(0) + "\n", "")
         return subprocess.CompletedProcess(cmd, self.review_code, self.review + "\n", "")
 
     def note(self, text):
@@ -220,11 +231,12 @@ def test_review_uses_the_edited_name(home):
 def test_review_invalid_name_creates_nothing(home, name):
     offer(home)
     before = sorted(p.name for p in (home / "Documents").iterdir())
-    osa = Osascript(review=f"button returned:Create & move, text returned:{name}")
-    assert main(home, "--review-suggestion", "tax", runner=osa) == 1
+    # the dialog comes back with the error; Esc there ends it
+    osa = Osascript(review=[f"button returned:Create & move, text returned:{name}"])
+    assert main(home, "--review-suggestion", "tax", runner=osa) == 0
     assert sorted(p.name for p in (home / "Documents").iterdir()) == before
-    assert len(osa.notes) == 1
-    assert "folder name" in osa.notes[0] or "already exists" in osa.notes[0]
+    assert len(osa.dialogs) == 2 and osa.notes == []
+    assert "folder name" in osa.dialogs[1] or "already exists" in osa.dialogs[1]
     assert "tax" in suggestions(home)["pending"]  # still answerable
 
 
@@ -243,7 +255,8 @@ def test_review_near_duplicate_then_use_existing(home):
 def test_review_near_duplicate_cancel_moves_nothing(home):
     s = offer(home)
     (home / "Documents/Tax").mkdir()
-    osa = Osascript(similar="button returned:Cancel")
+    osa = Osascript(review=["button returned:Create & move, text returned:Taxes"],
+                    similar="button returned:Cancel")
     assert main(home, "--review-suggestion", "tax", runner=osa) == 0
     assert list((home / "Documents/Tax").iterdir()) == []
     assert not (home / "Documents/Taxes").exists()
@@ -364,3 +377,141 @@ def test_expand_given_as_a_string_is_one_folder(tmp_path):
     assert route.load_config(rules, local).smart.expand == ("School",)
     local.write_text('[smart_sort]\nexpand = ["School", "Work"]\n')
     assert route.load_config(rules, local).smart.expand == ("School", "Work")
+
+
+# ---------------------------------------------------------------- final review fixes
+
+
+def test_review_invalid_name_loops_back_with_the_error_and_typed_name(home):
+    """I4: an invalid name re-shows the dialog, error first, prefilled with what was typed."""
+    offer(home)
+    osa = Osascript(review=["button returned:Create & move, text returned:a/b",
+                            "button returned:Create & move, text returned:My Taxes"])
+    assert main(home, "--review-suggestion", "tax", runner=osa) == 0
+    assert len(osa.dialogs) == 2
+    second = osa.dialogs[1]
+    assert second.startswith('display dialog "The folder name cannot contain \\"/\\"."')
+    assert 'default answer "a/b"' in second
+    assert len(list((home / "Documents/My Taxes").iterdir())) == 4
+    assert osa.notes == [osa.note('Created \\"My Taxes\\" and moved 4 files')]
+
+
+def test_review_loop_ends_on_not_now_and_never(home):
+    offer(home, "Taxes", 3, "tax")
+    osa = Osascript(review=["button returned:Create & move, text returned:.x",
+                            "button returned:Not now, text returned:.x"])
+    assert main(home, "--review-suggestion", "tax", runner=osa) == 0
+    assert "tax" in suggestions(home)["snoozed"] and suggestions(home)["pending"] == {}
+    offer(home, "Travel", 3, "trip")
+    osa = Osascript(review=["button returned:Create & move, text returned:",
+                            "button returned:Never suggest this, text returned:"])
+    assert main(home, "--review-suggestion", "travel", runner=osa) == 0
+    assert json.loads((state(home) / "never.json").read_text()) == ["travel"]
+    assert sorted(p.name for p in (home / "Documents").iterdir()) == ["Misc"]
+
+
+def test_review_similar_cancel_returns_to_the_review_dialog(home):
+    offer(home)
+    (home / "Documents/Tax").mkdir()
+    osa = Osascript(review=["button returned:Create & move, text returned:Taxes",
+                            "button returned:Create & move, text returned:Tax Papers"],
+                    similar=["button returned:Cancel"])
+    assert main(home, "--review-suggestion", "tax", runner=osa) == 0
+    assert len(osa.dialogs) == 3  # review, similar (Cancel), review again
+    assert 'default answer "Taxes"' in osa.dialogs[2]
+    assert list((home / "Documents/Tax").iterdir()) == []
+    assert len(list((home / "Documents/Tax Papers").iterdir())) == 4
+
+
+def test_answer_waits_longer_for_the_lock_than_the_first_check(home, monkeypatch):
+    """I3: after the user answers, a long sweep holding the lock does not drop the answer."""
+    import os
+    offer(home)
+    assert route.ANSWER_LOCK_WAIT >= 15 * 60
+    monkeypatch.setattr(route, "LOCK_WAIT", 0.05)
+    monkeypatch.setattr(route, "ANSWER_LOCK_WAIT", 5.0)
+    held = []
+
+    def sweep_starts():  # a sweep takes the lock while the dialog is open
+        if not held:
+            held.append(route.acquire_lock(home / "lock"))
+            threading.Timer(0.5, os.close, [held[0]]).start()
+
+    osa = Osascript(on_review=sweep_starts)
+    assert main(home, "--review-suggestion", "tax", runner=osa) == 0
+    assert (home / "Documents/Taxes").is_dir()
+
+
+def test_answer_still_busy_says_exactly_what_to_run(home, monkeypatch, capsys):
+    import os
+    offer(home)
+    monkeypatch.setattr(route, "ANSWER_LOCK_WAIT", 0.2)
+    held = []
+    osa = Osascript(review="button returned:Create & move, text returned:My \"Tax\" $files",
+                    on_review=lambda: held or held.append(route.acquire_lock(home / "lock")))
+    try:
+        assert main(home, "--review-suggestion", "tax", runner=osa) == 1
+    finally:
+        os.close(held[0])
+    out = capsys.readouterr()
+    cmd = 'route.py --accept-suggestion tax --name "My \\"Tax\\" \\$files"'
+    assert cmd in out.out + out.err
+    assert len(osa.notes) == 1 and "--accept-suggestion tax --name" in osa.notes[0]
+    assert "tax" in suggestions(home)["pending"]
+    assert not any(p.name.startswith("My") for p in (home / "Documents").iterdir())
+    # the printed command does the job
+    assert main(home, "--accept-suggestion", "tax", "--name", 'My "Tax" $files') == 0
+
+
+def test_decline_answer_still_busy_says_what_to_run(home, monkeypatch, capsys):
+    import os
+    offer(home)
+    monkeypatch.setattr(route, "ANSWER_LOCK_WAIT", 0.2)
+    held = []
+    osa = Osascript(review="button returned:Never suggest this, text returned:Taxes",
+                    on_review=lambda: held or held.append(route.acquire_lock(home / "lock")))
+    try:
+        assert main(home, "--review-suggestion", "tax", runner=osa) == 1
+    finally:
+        os.close(held[0])
+    out = capsys.readouterr()
+    assert "route.py --decline-suggestion tax --never" in out.out + out.err
+    assert "--decline-suggestion tax --never" in osa.notes[0]
+
+
+def test_review_lists_only_saved_items_that_still_exist_and_moves_only_those(home):
+    """I7: the dialog shows the files saved at send time; a later arrival is not moved."""
+    s = offer(home, "Taxes", 3, "tax")
+    Path(s.items[0]).unlink()
+    late = add(home, "Taxes", 1, "late")[0]
+    osa = Osascript()
+    assert main(home, "--review-suggestion", "tax", runner=osa) == 0
+    shown = osa.dialogs[0]
+    assert "tax-0.pdf" not in shown and "tax-1.pdf" in shown and "late-0.pdf" not in shown
+    assert sorted(p.name for p in (home / "Documents/Taxes").iterdir()) == ["tax-1.pdf",
+                                                                           "tax-2.pdf"]
+    assert late.exists()
+    assert osa.notes == [osa.note('Created \\"Taxes\\" and moved 2 files'
+                                  ' (1 of the listed files are no longer in Misc)')]
+
+
+def test_suggestions_list_takes_the_lock_or_reads_only(home, capsys):
+    import os
+    offer(home, "Taxes", 3, "tax", sent_at=time.time() - 8 * DAY)
+    before = (state(home) / "suggestions.json").read_text()
+    held = route.acquire_lock(home / "lock")
+    try:
+        assert main(home, "--suggestions") == 0
+        assert (state(home) / "suggestions.json").read_text() == before  # busy: no writes
+    finally:
+        os.close(held)
+    capsys.readouterr()
+    assert main(home, "--suggestions") == 0
+    assert "tax" in suggestions(home)["snoozed"]  # with the lock, the expiry is saved
+
+
+def test_answer_command_quotes_a_multi_word_key():
+    assert route._answer_command("car insurance", "not_now", "").endswith(
+        "route.py --decline-suggestion 'car insurance'")
+    assert route._answer_command("tax", "create", " A`b ").endswith(
+        'route.py --accept-suggestion tax --name "A\\`b"')

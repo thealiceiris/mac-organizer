@@ -93,3 +93,12 @@ def test_notify_is_plain_display_notification():
         raise OSError("no osascript")
 
     dialog.notify("x", runner=boom)  # never raises
+
+
+def test_dialog_shows_an_error_first_and_the_typed_name():
+    """I4: re-shown after a bad name: the error is the first line, the typed name prefilled."""
+    r = Runner("button returned:Not now, text returned:x\n")
+    dialog.review(_s(), runner=r, error="The folder name is empty.", name="  ")
+    assert r.script.startswith('display dialog "The folder name is empty." & return & "" & return'
+                               ' & "Create a \\"Taxes\\" folder in Documents?"')
+    assert 'default answer "  "' in r.script

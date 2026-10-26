@@ -35,6 +35,7 @@ class AcceptResult:
     error: str | None = None
     similar: str | None = None
     gone: int = 0  # listed files (shown in the dialog) that are no longer in Misc
+    bad_name: bool = False  # the error is about the typed name: ask for another one
 
 
 def _read(path: Path):
@@ -221,7 +222,7 @@ def accept(state, key, name, misc_dir, documents_root, expand, log) -> AcceptRes
         return AcceptResult(error="those files are no longer in Misc", gone=gone)
     name, err, similar = check_name(name, documents_root, expand)
     if err:
-        return AcceptResult(error=err)
+        return AcceptResult(error=err, bad_name=True)
     if similar:
         return AcceptResult(similar=similar)
     root = Path(documents_root)
@@ -231,9 +232,9 @@ def accept(state, key, name, misc_dir, documents_root, expand, log) -> AcceptRes
     try:
         folder.mkdir()
     except FileExistsError:
-        return AcceptResult(error=f"A folder named \"{name}\" already exists.")
+        return AcceptResult(error=f"A folder named \"{name}\" already exists.", bad_name=True)
     except OSError as exc:
-        return AcceptResult(error=f"Could not create \"{name}\": {exc}")
+        return AcceptResult(error=f"Could not create \"{name}\": {exc}", bad_name=True)
     log("NEWFOLDER", Path(misc_dir), folder)
     moved, err = _move_all(items, folder, log)
     if moved:  # nothing moved: still pending, so it can be answered again
