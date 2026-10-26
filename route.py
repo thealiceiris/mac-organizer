@@ -1148,11 +1148,12 @@ def _suggestion_cli(args, runner) -> int:
     lock_path = args.lock or default_lock_path()
     try:
         config = load_config(args.rules, args.rules.parent / "rules.local.toml")
-    except FileNotFoundError:
-        print(f"rules file not found at {args.rules} — run ./install.sh first", file=sys.stderr)
-        return 1
-    except ValueError as exc:
-        print(f"rules not loaded: {exc}", file=sys.stderr)
+    except (FileNotFoundError, ValueError) as exc:
+        text = (f"rules file not found at {args.rules} — run ./install.sh first"
+                if isinstance(exc, FileNotFoundError) else f"rules not loaded: {exc}")
+        print(text, file=sys.stderr)
+        if args.review_pending:
+            dialog.info(f"mac-organizer is not set up yet: {text}", runner)
         return 1
     state = default_state_dir()
     misc, docs, expand = _misc(config), config.smart.documents_root, config.smart.expand

@@ -152,3 +152,12 @@ def test_set_model_path_writes_a_valid_setting(tmp_path):
     assert setup.set_model_path(local, model) is None        # twice: still one line
     assert local.read_text().count("model_path =") == 1
     assert "not found" in setup.set_model_path(local, tmp_path / "missing.gguf")
+
+
+def test_review_pending_without_rules_explains_in_a_dialog(tmp_path, monkeypatch):
+    import route
+    monkeypatch.setenv("HOME", str(tmp_path))
+    osa = Osascript()
+    assert route.main(["--review-pending", "--rules", str(tmp_path / "nope.toml"),
+                       "--lock", str(tmp_path / "lock")], runner=osa) == 0
+    assert len(osa.dialogs) == 1 and "not set up yet" in osa.dialogs[0]
