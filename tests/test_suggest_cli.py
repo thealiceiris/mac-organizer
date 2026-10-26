@@ -353,3 +353,14 @@ def test_suggestion_flags_reject_other_modes(home):
                  ["--name", "x"], ["--never"], ["--decline-suggestion", "x", "--name", "y"]):
         with pytest.raises(SystemExit):
             main(home, *argv)
+
+
+def test_expand_given_as_a_string_is_one_folder(tmp_path):
+    """expand = "School" means ["School"], not ["S", "c", "h", ...]."""
+    rules = tmp_path / "rules.toml"
+    rules.write_text("")
+    local = tmp_path / "rules.local.toml"
+    local.write_text('[smart_sort]\nexpand = "School"\n')
+    assert route.load_config(rules, local).smart.expand == ("School",)
+    local.write_text('[smart_sort]\nexpand = ["School", "Work"]\n')
+    assert route.load_config(rules, local).smart.expand == ("School", "Work")

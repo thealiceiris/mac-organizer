@@ -134,12 +134,15 @@ def load_config(rules_path: Path, local_path: Path | None) -> Config:
     local = _read_toml(local_path)
     smart = {**shipped.get("smart_sort", {}), **local.get("smart_sort", {})}
     model = smart.get("model_path")
+    expand = smart.get("expand", ["Academics"])
+    if isinstance(expand, str):  # expand = "School" means one folder, not its letters
+        expand = [expand]
     settings = SmartSettings(
         enabled=bool(smart.get("enabled", True)),
         threshold=float(smart.get("threshold", 0.6)),
         model_path=Path(model).expanduser() if model else None,
         documents_root=Path(smart.get("documents_root", "~/Documents")).expanduser(),
-        expand=tuple(str(x) for x in smart.get("expand", ["Academics"])),
+        expand=tuple(str(x) for x in expand),
     )
     sug = {**shipped.get("suggest", {}), **local.get("suggest", {})}
     suggest_settings = SuggestSettings(
