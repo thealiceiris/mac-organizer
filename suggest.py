@@ -111,10 +111,14 @@ def _load_live(state, now, settings, write: bool) -> dict:
 
 
 def due(state, misc_dir, documents_root, expand, settings, now,
-        write: bool = True) -> Suggestion | None:
-    """The topic to offer now, if any. Expires ignored suggestions first (``write``: saved)."""
+        write: bool = True, ignore_daily: bool = False) -> Suggestion | None:
+    """The topic to offer now, if any. Expires ignored suggestions first (``write``: saved).
+
+    ``ignore_daily``: the user asked (opened the app), so the once-a-day limit on
+    unprompted notifications does not apply.
+    """
     data = _load_live(state, now, settings, write)
-    if data["last_sent"] is not None and now - data["last_sent"] < DAY:
+    if not ignore_daily and data["last_sent"] is not None and now - data["last_sent"] < DAY:
         return None
     never = _never(state)
     best = None

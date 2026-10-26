@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -239,6 +240,11 @@ def install_app(python: str, route_py: Path, apps_dir: Path | None = None,
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
+            if not (target / "Contents/Resources/Scripts/main.scpt").exists():
+                # something else lives at that path: never delete what isn't ours
+                print(f"Folder Suggestions app not built: {target} exists and is not ours",
+                      file=sys.stderr)
+                return None
             shutil.rmtree(target)
         result = runner([osacompile, "-o", str(target), "-e", script],
                         capture_output=True, text=True, check=False, timeout=60)
@@ -257,6 +263,39 @@ def remove_app(apps_dir: Path | None = None) -> None:
         shutil.rmtree(target)
 
 
+def set_model_path(local_toml: Path, model: Path) -> str | None:
+    """Point smart sort at ``model`` in rules.local.toml. Returns an error, or None.
+
+    Replaces any ``model_path`` line (set or commented out) under ``[smart_sort]``,
+    so users never have to edit the file (TextEdit's curly quotes break TOML).
+    """
+    model = Path(model).expanduser()
+    if not model.is_file():
+        return f"model file not found: {model}"
+    line = f"model_path = {json.dumps(str(model))}"
+    lines = local_toml.read_text().splitlines() if local_toml.exists() else []
+    out, in_smart, done = [], False, False
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped.startswith("["):
+            if in_smart and not done:
+                out.append(line)
+                done = True
+            in_smart = stripped == "[smart_sort]"
+        elif in_smart and stripped.lstrip("#").strip().startswith("model_path"):
+            if not done:
+                out.append(line)
+                done = True
+            continue
+        out.append(raw)
+    if not done:
+        if not in_smart:
+            out += ["", "[smart_sort]"]
+        out.append(line)
+    local_toml.write_text("\n".join(out) + "\n")
+    return None
+
+
 def remove_agent_plists() -> None:
     """Delete our agent plists so launchd cannot start the sorter at next login."""
     for plist_path in launch_agents_dir().glob(f"{LABEL_PREFIX}.*.plist"):
@@ -271,6 +310,17 @@ def main(argv: list[str] | None = None) -> None:
     so it can never arrange for the sorter to start at the next login.
     """
     args = sys.argv[1:] if argv is None else argv
+    if "--model" in args:
+        # python3 setup.py --model ~/models/<file>.gguf : only sets the model path
+        i = args.index("--model")
+        if i + 1 >= len(args):
+            raise SystemExit("usage: python3 setup.py --model <path to your .gguf model>")
+        write_local_rules(REPO / "rules.local.default.toml", REPO / "rules.local.toml")
+        error = set_model_path(REPO / "rules.local.toml", Path(args[i + 1]))
+        if error:
+            raise SystemExit(error)
+        print(f"AI model set: {Path(args[i + 1]).expanduser()}")
+        return
     want_agents, no_agents = "--agents" in args, "--no-agents" in args
     if want_agents and no_agents:
         raise SystemExit("setup.py: --agents and --no-agents cannot be combined")

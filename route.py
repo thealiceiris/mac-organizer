@@ -946,7 +946,9 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
         if len(answering) + args.suggestions > 1 or args.dry_run or args.backlog \
                 or args.apply is not None or args.paths:
             parser.error("the suggestion options work alone")
-        return _suggestion_cli(args, runner or subprocess.run)
+        code = _suggestion_cli(args, runner or subprocess.run)
+        # the app shows any problem in a dialog; a non-zero exit would add a raw error box
+        return 0 if args.review_pending else code
     if args.apply is not None and not args.backlog:
         parser.error("--apply works only with --backlog")
     if args.backlog and args.apply is not None and args.paths:
@@ -1158,21 +1160,25 @@ def _suggestion_cli(args, runner) -> int:
     def log(verb, src, dst):
         _log(log_path, verb, src, dst)
 
+    def tell(text: str) -> None:
+        # opened from the app: the user is looking, so answer in a dialog
+        (dialog.info if args.review_pending else dialog.notify)(text, runner)
+
     def say(text: str, ok: bool) -> int:
         print(text)
         if args.review_suggestion is not None:
-            dialog.notify(text, runner)
+            tell(text)
         return 0 if ok else 1
 
     def busy() -> int:
         print(BUSY_TEXT, file=sys.stderr)
-        dialog.notify(BUSY_TEXT, runner)
+        tell(BUSY_TEXT)
         return 1
 
     def stale(key: str) -> int:
         print(f"no such suggestion: {key}")
         if args.review_suggestion is not None:
-            dialog.notify(STALE_TEXT, runner)
+            tell(STALE_TEXT)
         return 1
 
     if args.suggestions:
@@ -1237,7 +1243,7 @@ def _suggestion_cli(args, runner) -> int:
             waiting = suggest.pending(state, now, config.suggest)
             if waiting:
                 return waiting[0].key
-            s = suggest.due(state, misc, docs, expand, config.suggest, now)
+            s = suggest.due(state, misc, docs, expand, config.suggest, now, ignore_daily=True)
             if s is None:
                 return None
             suggest.mark_sent(state, s, now)
@@ -1269,7 +1275,7 @@ def _suggestion_cli(args, runner) -> int:
             text = (f"mac-organizer is still busy, so your answer was not applied. "
                     f"To apply it, run: {_answer_command(key, button, name)}")
             print(text)
-            dialog.notify(text, runner)
+            tell(text)
         return result
 
     # The dialogs are shown without the lock, so a sweep is never held up by them.
