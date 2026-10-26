@@ -75,7 +75,12 @@ for plist in "$AGENTS_DIR"/com.mac-organizer.*.plist; do
   "$LAUNCHCTL" bootout "gui/$(id -u)" "$plist" 2>/dev/null || true
 done
 
-"$PYTHON" "$REPO/setup.py"
+if [ "$LOAD_AGENTS" = 0 ]; then
+  # no agent plists left behind: launchd would load them at next login
+  "$PYTHON" "$REPO/setup.py" --no-agents
+else
+  "$PYTHON" "$REPO/setup.py"
+fi
 
 if [ "$LOAD_AGENTS" = 0 ]; then
   echo

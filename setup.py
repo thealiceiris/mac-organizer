@@ -188,7 +188,7 @@ def offer_starter_folders(
     names, documents_root: Path, state: Path, ask=input, interactive: bool = False
 ) -> list[Path]:
     """Ask once whether to create starter folders; only y/yes creates them."""
-    names = [n for n in names if n]
+    names = [n for n in names if n and "/" not in n and not n.startswith(".")]
     if not interactive or not names or not documents_is_empty(documents_root):
         return []
     stamp = Path(state) / STARTER_STAMP
@@ -209,15 +209,20 @@ def offer_starter_folders(
         return []
     made: list[Path] = []
     for name in names:
-        if "/" in name or name.startswith("."):
-            continue
         target = Path(documents_root) / name
         target.mkdir(parents=True, exist_ok=True)
         made.append(target)
     return made
 
 
-def main() -> None:
+def remove_agent_plists() -> None:
+    """Delete our agent plists so launchd cannot start the sorter at next login."""
+    for plist_path in launch_agents_dir().glob(f"{LABEL_PREFIX}.*.plist"):
+        plist_path.unlink()
+
+
+def main(argv: list[str] | None = None) -> None:
+    no_agents = "--no-agents" in (sys.argv[1:] if argv is None else argv)
     python = sys.executable
     route_py = REPO / "route.py"
     screenshot_dir = detect_screenshot_dir()
@@ -235,7 +240,11 @@ def main() -> None:
         names, Path("~/Documents").expanduser(), state_dir(),
         interactive=sys.stdin.isatty(),
     )
-    agents = install_agents(python, route_py, screenshot_dir)
+    if no_agents:
+        remove_agent_plists()
+        agents = []
+    else:
+        agents = install_agents(python, route_py, screenshot_dir)
     copy_vault_template(REPO / "vault-template", Path("~/Notes").expanduser())
 
     print(f"screenshot dir: {screenshot_dir}")

@@ -263,7 +263,8 @@ def test_install_busy_mac_no_skips_loading_agents(env):
     assert "Load the background sorter now? [y/N]" in result.stdout
     assert "./install.sh" in result.stdout
     log = env["log"].read_text()
-    assert "bootstrap" not in log and "load" not in log
+    assert "bootstrap" not in log and "load -w" not in log
+    assert _agents(env) == []
     assert (env["repo"] / "rules.toml").exists()
     assert (env["home"] / "Documents" / "Misc").is_dir()
 
@@ -279,7 +280,8 @@ def test_install_busy_mac_no_unloads_loaded_agents(env):
     result = _run_input(env["repo"] / "install.sh", env, "\n")  # empty answer is No
     assert result.returncode == 0, result.stderr
     log = env["log"].read_text()
-    assert "bootout" in log and "bootstrap" not in log
+    assert "bootout" in log and "bootstrap" not in log and "load -w" not in log
+    assert _agents(env) == []  # the stale plist is gone too
 
 
 def test_install_busy_mac_yes_loads(env):

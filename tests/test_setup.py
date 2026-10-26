@@ -246,3 +246,13 @@ def test_starter_names_come_from_config(tmp_path):
     assert setup.starter_names(rules, tmp_path / "rules.local.toml") == ("A", "B")
     import route
     assert setup.starter_names(tmp_path / "missing.toml", None) == route.DEFAULT_STARTER_FOLDERS
+
+
+def test_starter_prompt_lists_only_valid_names(tmp_path):
+    prompts = []
+    made = setup.offer_starter_folders(
+        ("Work", "a/b", ".hid"), tmp_path / "Documents", tmp_path / "s",
+        ask=lambda p: prompts.append(p) or "y", interactive=True,
+    )
+    assert prompts == ["Your Documents folder is empty. Create starter folders Work? [y/N] "]
+    assert made == [tmp_path / "Documents" / "Work"]
