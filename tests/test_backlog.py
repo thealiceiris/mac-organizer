@@ -718,3 +718,18 @@ def test_inbox_unsure_goes_to_misc_and_applies(home, make_file):
     assert (home / "Documents/Misc/mystery.pdf").exists()
     assert (home / "Documents/Misc/book.epub").exists()
     assert not (home / "Documents/Inbox/mystery.pdf").exists()
+
+
+def test_replan_leaves_out_items_vetoed_earlier(home, make_file):
+    make_file(home / "Downloads/keepme.pdf", content="k")
+    make_file(home / "Downloads/other.pdf", content="o")
+    report = do_plan(home, FakeFactory(), "Downloads")
+    rewrite(report, lambda ln: "#" + ln if "keepme.pdf" in ln.split("\t")[1] else ln)
+    do_apply(home, report)
+    assert (home / "Downloads/keepme.pdf").exists()
+
+    make_file(home / "Downloads/new.pdf", content="n")
+    again = do_plan(home, FakeFactory(), "Downloads")
+    assert "keepme.pdf" not in by_src(again)
+    assert "new.pdf" in by_src(again)
+    assert "kept because you vetoed it earlier" in again.read_text()

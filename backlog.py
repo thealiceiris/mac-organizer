@@ -93,6 +93,11 @@ def plan(paths: list[Path], config, smart, now: float, *, state: Path | None = N
     finally:
         if smart is not None:
             smart.close()  # the model is never left running
+    keep = memory.KeepList(state)
+    held = [ln for ln in lines if keep.holds(ln.src)]
+    if held:
+        lines = [ln for ln in lines if not keep.holds(ln.src)]
+        notes.extend(f"kept because you vetoed it earlier: {ln.src}" for ln in held)
     lines = _settle_duplicates(lines)
     outage = smart is not None and smart.outage
     report = _write_report(state, now, lines, notes, outage)

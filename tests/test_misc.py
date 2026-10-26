@@ -84,3 +84,11 @@ def test_setup_creates_misc(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     setup.make_dirs()
     assert (tmp_path / "Documents" / "Misc").is_dir()
+
+
+@pytest.mark.parametrize("folder", ["Downloads", "Inbox"])
+def test_voice_notes_go_to_audio(default_rules, tmp_path, make_file, folder):
+    now = time.time()
+    for name in ("note.opus", "note.ogg", "memo.amr"):
+        hit = _match(default_rules, make_file(tmp_path / folder / name), now)
+        assert hit.dest == "~/Media/Audio", name

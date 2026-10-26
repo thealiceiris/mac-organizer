@@ -43,7 +43,7 @@ dest = "~/Media/Images"
 
 [[rule]]
 source = "~/Downloads"
-ext = ["mp3", "m4a", "wav", "aac", "flac", "aiff"]
+ext = ["mp3", "m4a", "wav", "aac", "flac", "aiff", "opus", "ogg", "amr"]
 action = "move"
 dest = "~/Media/Audio"
 
@@ -137,7 +137,7 @@ dest = "~/Media/Images"
 
 [[rule]]
 source = "~/Inbox"
-ext = ["mp3", "m4a", "wav", "aac", "flac", "aiff"]
+ext = ["mp3", "m4a", "wav", "aac", "flac", "aiff", "opus", "ogg", "amr"]
 action = "move"
 dest = "~/Media/Audio"
 
