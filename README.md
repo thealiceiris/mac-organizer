@@ -1,21 +1,24 @@
 # mac-organizer
 
 **Keeps your Mac tidy automatically.** Things you download or drop on your
-Desktop are moved into the right folder for you: pictures to Pictures, music
-to Music, documents into the matching folder in Documents.
+Desktop are moved where they belong: pictures, music and videos into a
+**Media** folder in your home folder, and documents into the matching folder in
+**Documents**.
 
 For documents, a small AI model reads each file **on your own Mac** and picks
 the best folder. Nothing is ever uploaded anywhere.
 
 Your files are never deleted or overwritten. Anything it isn't sure about
-goes to a folder called **Misc**, so you can sort it yourself.
+goes to a folder called **Documents/Misc**, so you can sort it yourself.
 
 ---
 
 ## What you need
 
 - A Mac
-- [Homebrew](https://brew.sh) (a free tool for installing apps from the Terminal)
+- [Homebrew](https://brew.sh), a free tool for installing apps from the
+  Terminal. When Homebrew finishes installing, it shows **"Next steps"** with
+  two or three commands: copy and run those too, or the steps below won't work.
 - About 5 GB of free space for the AI model (optional, but it's what makes
   document sorting smart)
 
@@ -23,8 +26,8 @@ goes to a folder called **Misc**, so you can sort it yourself.
 
 ## Install
 
-Open the **Terminal** app (press ⌘ Space, type *Terminal*, press Enter), then
-copy and paste each step.
+Open the **Terminal** app (press ⌘ Space, type *Terminal*, press Enter). Copy
+and paste each step, then press Enter.
 
 **1. Install the helper tools**
 
@@ -32,18 +35,31 @@ copy and paste each step.
 brew install python llama.cpp poppler terminal-notifier
 ```
 
-**2. Download an AI model** *(optional, recommended)*
-
-Any "instruct" model in **GGUF** format from [Hugging Face](https://huggingface.co)
-works. A file of about 4–5 GB (look for **Q4_K_M** in the name) suits most
-Macs. Save it in a folder called `models` in your home folder.
-
-**3. Download mac-organizer**
+**2. Download mac-organizer**
 
 ```bash
 git clone https://github.com/thealiceiris/mac-organizer.git ~/.mac-organizer
 cd ~/.mac-organizer
 ```
+
+**3. Get an AI model** *(optional, recommended)*
+
+The model is a single large file ending in `.gguf`. One that works well on most
+Macs: go to [huggingface.co](https://huggingface.co), search for
+**Qwen2.5-7B-Instruct-GGUF**, open the **Files** tab and download the file
+whose name ends in **Q4_K_M.gguf** (about 4.7 GB). Any other "Instruct" GGUF
+model of a similar size works too.
+
+When the download has finished, move it out of Downloads and tell
+mac-organizer where it is (change the file name to match yours):
+
+```bash
+mkdir -p ~/models && mv ~/Downloads/*.gguf ~/models/
+python3 setup.py --model ~/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf
+```
+
+It replies "AI model set". (Without a model, everything still works; documents
+just go to Documents/Misc.)
 
 **4. Switch it on**
 
@@ -51,27 +67,28 @@ cd ~/.mac-organizer
 ./install.sh
 ```
 
-It may ask you two questions. Both are optional, and the answer is **No**
-unless you type `y`:
+It may ask up to two questions. The answer is **No** unless you type `y`:
 
-- **"Your Documents folder is empty. Create starter folders…?"** Say yes if
-  you'd like a few ready-made folders (Work, School, Finance, Health,
-  Personal, Travel).
 - **"Load the background sorter now?"** This only appears if you already have
   lots of files lying around. Say **No** if you'd like to see what it would do
   first (see *Already have a messy Mac?* below).
+- **"Your Documents folder is empty. Create starter folders…?"** Say yes if
+  you'd like a few ready-made folders (Work, School, Finance, Health,
+  Personal, Travel).
 
-**5. Tell it where your AI model is**
+**5. Say "Allow" when your Mac asks**
 
-Open the settings file:
+The first time things run, macOS may ask whether mac-organizer may **send
+notifications**, and whether **Folder Suggestions** may use your **Documents**
+folder. Click **Allow** for both.
 
-```bash
-open -e ~/.mac-organizer/rules.local.toml
-```
+---
 
-Find the `model_path` line, remove the `#` at its start, and put in your
-model's file name, e.g. `model_path = "~/models/my-model.gguf"`. Save the file.
-That's it.
+## Is it working?
+
+Download any PDF (or drag one into your Downloads folder). Within about a
+minute it disappears from Downloads and shows up in a folder in Documents, or
+in Documents/Misc. You'll see a notification when it sorts documents.
 
 ---
 
@@ -88,16 +105,26 @@ Downloads or on your Desktop:
 | Screenshots | `Media/Screenshots`, by month |
 | App installers (`.dmg`) | `Downloads/Installers` |
 | Documents, slides, spreadsheets, zips | the matching folder in **Documents**, or **Documents/Misc** if unsure |
+| Notes (`.txt`, `.md`) | `Notes/00-Inbox` |
 | The same file downloaded twice | the extra copy goes to the Trash |
-
-You'll see a short notification when it sorts documents, and a summary of where
-things went.
 
 **It filed something in the wrong place?** Just drag it to the right folder.
 It learns from that.
 
 **Opened an installer disk and forgot to close it?** It's ejected for you after
 15 minutes.
+
+### Where things are
+
+mac-organizer creates a few folders in your home folder (in Finder: **Go →
+Home**):
+
+- **Media**: Images, Audio, Video, Screenshots
+- **Documents/Misc**: anything it wasn't sure about
+- **Documents/Keys**: security keys and certificates (private)
+- **Inbox**: things from your Desktop pass through here for a moment
+- **Notes**: a notes folder (you can open it with the free
+  [Obsidian](https://obsidian.md) app, or ignore it)
 
 ---
 
@@ -108,42 +135,67 @@ mac-organizer never creates folders on its own. Instead, when several files in
 
 > 3 files in Misc look like Taxes. Open Folder Suggestions to review.
 
-Open the **Folder Suggestions** app (it's in your Applications folder, or press
-⌘ Space and type *Folder Suggestions*). It shows the files and asks:
+Press ⌘ Space, type **Folder Suggestions** and press Enter. It shows the files
+and asks:
 
 > **Create a "Taxes" folder in Documents?**
 > [ Not now ]  [ Never suggest this ]  [ **Create & move** ]
 
 You can change the name before clicking. Nothing happens unless you click
-**Create & move**. If you ignore it, nothing changes.
+**Create & move**. If you ignore it, nothing changes. You can open Folder
+Suggestions any time; if nothing is waiting it says so.
 
 ---
 
 ## Already have a messy Mac?
 
-If your Downloads or Documents are already full, you can **preview first**.
-Nothing moves until you say so.
+If your Downloads or Documents are already full, preview first. Nothing moves
+until you say so.
 
-```bash
-cd ~/.mac-organizer
-python3 setup.py
-python3 route.py --backlog ~/Downloads ~/Documents
-```
+1. Do the install above, and answer **No** to "Load the background sorter
+   now?" (it only asks when there are lots of files; if it doesn't ask,
+   sorting simply starts). Set up the AI model first, or every document will
+   be planned into Misc.
 
-These two commands never start the background sorter.
+2. Make the preview:
 
-This writes a list of everything it *would* do and shows you where the list
-is. Open it in TextEdit:
+   ```bash
+   cd ~/.mac-organizer
+   python3 route.py --backlog ~/Downloads ~/Documents
+   ```
 
-- To **skip** a line, put `#` at the start of it.
-- Lines starting with `#NEWFOLDER` are **suggested new folders**. To accept
-  one, remove its `#`. You can change the folder name (the third column).
+   These commands never start the background sorter. When it finishes, it
+   prints where it saved the list (a path ending in `.tsv`).
 
-When you're happy, run the command printed at the top of the list (it starts
-with `python3 route.py --backlog --apply`). Then switch on the everyday sorter
-with `./install.sh`.
+3. Open the list, putting the path it printed between the quotes:
+
+   ```bash
+   open -e "PASTE THE PATH HERE"
+   ```
+
+   - To **skip** a line, put `#` at the very start of it.
+   - Lines starting with `#NEWFOLDER` are **suggested new folders**. To accept
+     one, delete just that `#`. You may change the folder name (the third
+     column).
+   - Don't change anything else on a line. The columns are separated by tabs,
+     so don't delete those.
+
+   Save the file.
+
+4. Near the top of the list is a line containing
+   `--backlog --apply`. Copy it **starting from `python3`** to the end of that
+   line, paste it into Terminal and press Enter. It does exactly what's left in
+   the list.
+
+5. Switch on the everyday sorter: run `./install.sh` again and answer `y`.
 
 ---
+
+## Update to the latest version
+
+```bash
+cd ~/.mac-organizer && git pull && ./install.sh
+```
 
 ## Turn it off
 

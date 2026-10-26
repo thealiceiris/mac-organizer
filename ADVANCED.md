@@ -18,7 +18,7 @@ the model go to `~/Documents/Misc`.
 ## Install
 
 ```bash
-git clone <this repo> ~/.mac-organizer
+git clone https://github.com/thealiceiris/mac-organizer.git ~/.mac-organizer
 cd ~/.mac-organizer
 ./install.sh
 ```
@@ -34,15 +34,17 @@ cd ~/.mac-organizer
    the state directory; detects your screenshot location; generates
    `rules.toml` and a personal `rules.local.toml`; installs the `launchd`
    agents (one per watched folder plus a 10-minute sweep — five, or four when
-   your screenshots already land in a watched folder) — only when you said yes
-   to loading the sorter, or were not asked; and copies the Obsidian vault template to `~/Notes`
+   your screenshots already land in a watched folder) and builds
+   `~/Applications/Folder Suggestions.app` (`setup.py --agents`) — only when you
+   said yes to loading the sorter, or were not asked; and copies the Obsidian vault template to `~/Notes`
    (never overwriting existing files).
 3. Loads the agents with `launchctl`.
 4. Prints a dry-run preview of what the router would do right now (smart-sort
    items show as `SMART? <file> (model decides; fallback ...)`: the preview
    never starts the model).
 
-Then set `model_path` in `~/.mac-organizer/rules.local.toml` (see "Changing the
+Then set the model: `python3 setup.py --model ~/models/<file>.gguf` (it writes
+`model_path` in `~/.mac-organizer/rules.local.toml`; see "Changing the
 model"); until you do, smart sort is off and documents go to `~/Documents/Misc`.
 
 Then open Obsidian and "Open folder as vault" → `~/Notes`.
@@ -195,9 +197,9 @@ add personal rules there (see the commented example in the file).
 
 ### Changing the model
 
-Any GGUF chat model that `llama-server` can load works. Download one, set
-`model_path` under `[smart_sort]` in `rules.local.toml` (also required after a
-fresh install), and you are done; the
+Any GGUF chat model that `llama-server` can load works. Download one and run
+`python3 setup.py --model <path to the .gguf>` (it sets `model_path` under
+`[smart_sort]` in `rules.local.toml`; also required after a fresh install). The
 next batch uses it. To check that a model behaves, run the opt-in live test,
 which starts the real server and classifies a few sample documents:
 
@@ -335,8 +337,8 @@ overwrite a file — collisions get a ` -2` suffix.
 
 ## After changing your screenshot location or upgrading Python
 
-Re-run `./install.sh`. It regenerates the agents (the Python path is baked
-into them) and, if `rules.toml` does not yet exist, regenerates it with the
+Re-run `./install.sh`. It regenerates the agents and the Folder Suggestions
+app (the Python path is baked into both) and, if `rules.toml` does not yet exist, regenerates it with the
 new screenshot path. To force `rules.toml` regeneration, delete it first
 (your edits will be lost).
 
@@ -347,8 +349,8 @@ cd ~/.mac-organizer
 ./uninstall.sh
 ```
 
-Removes the `launchd` agents only. Your files, `rules.toml`, `~/Notes`, and
-logs are left in place.
+Removes the `launchd` agents and `~/Applications/Folder Suggestions.app`. Your
+files, `rules.toml`, `~/Notes`, and logs are left in place.
 
 ## Optional Obsidian plugins
 

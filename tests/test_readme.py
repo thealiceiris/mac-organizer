@@ -96,4 +96,4 @@ def test_plain_readme_is_for_everyone():
     # no jargon in the plain guide
     for jargon in ["launchd", "--review-suggestion", "name_regex", "has_installer", "SmartRouter"]:
         assert jargon not in text, jargon
-    assert len(text.splitlines()) < 200
+    assert len(text.splitlines()) < 260  # a step-by-step guide, not a reference
