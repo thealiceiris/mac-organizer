@@ -907,3 +907,11 @@ def test_outage_plan_says_no_folder_suggestions(home, make_file):
     report = do_plan(home, broken, "Downloads")
     assert newfolders(report) == []
     assert "no new folders could be suggested" in report.read_text()
+
+
+def test_report_header_says_loose_documents_follow_downloads_rules(home, make_file):
+    make_file(home / "Downloads/a.png")
+    report = do_plan(home, FakeFactory(), "Downloads")
+    header = "\n".join(ln for ln in report.read_text().splitlines() if ln.startswith("#"))
+    assert "Loose files in ~/Documents follow the ~/Downloads rules" in header
+    assert ".ics" in header and "Trash" in header

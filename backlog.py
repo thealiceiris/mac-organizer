@@ -422,6 +422,8 @@ def _write_report(state: Path, now: float, lines: list[Line], notes: list[str],
         " only if they end up empty.",
         "Vetoed items in ~/Downloads are remembered on apply: the regular sorting leaves"
         " them alone until they change.",
+        "Loose files in ~/Documents follow the ~/Downloads rules, trash rules included"
+        " (e.g. an .ics older than a day goes to the Trash): veto any you want to keep.",
     ]
     if outage:
         header.append("WARNING: AI sorting was unavailable while planning: unsure items fell back"
