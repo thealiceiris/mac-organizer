@@ -1,436 +1,173 @@
 # mac-organizer
 
-A fully automatic file-tidying system for macOS, plus a ready-to-use Obsidian
-vault. Files that land in your drop zones are moved to permanent homes by a
-small Python script triggered by `launchd`. No GUI, no Python dependencies
-(standard library only). Optionally, a local AI model reads documents and files
-them into the right folder in `~/Documents`, entirely on your Mac.
+**Keeps your Mac tidy automatically.** Things you download or drop on your
+Desktop are moved into the right folder for you: pictures to Pictures, music
+to Music, documents into the matching folder in Documents.
 
-## Quick start
+For documents, a small AI model reads each file **on your own Mac** and picks
+the best folder. Nothing is ever uploaded anywhere.
 
-1. **Install the tools** (only Python is required; the rest enable smart sort,
-   PDF reading and clickable notifications):
+Your files are never deleted or overwritten. Anything it isn't sure about
+goes to a folder called **Misc**, so you can sort it yourself.
 
-   ```bash
-   brew install python llama.cpp poppler terminal-notifier
-   ```
+---
 
-2. **Get a model.** Any GGUF chat model works. A ~4–5 GB instruction-tuned
-   ("instruct" or "it") model at Q4_K_M quantisation from Hugging Face is a
-   good fit for a 16 GB Mac. Put it somewhere like `~/models/`.
+## What you need
 
-3. **Download mac-organizer:**
+- A Mac
+- [Homebrew](https://brew.sh) (a free tool for installing apps from the Terminal)
+- About 5 GB of free space for the AI model (optional, but it's what makes
+  document sorting smart)
 
-   ```bash
-   git clone https://github.com/thealiceiris/mac-organizer.git ~/.mac-organizer
-   cd ~/.mac-organizer
-   ```
-
-4. **Messy Downloads or Documents? Preview before anything moves (optional).**
-
-   ```bash
-   python3 setup.py                     # folders + config only: writes no launchd agents
-   # edit rules.local.toml: model_path = "~/models/<your-model>.gguf"
-   python3 route.py --backlog ~/Downloads ~/Documents   # writes a report, moves nothing
-   # open the report: delete a line, or put # in front of it, to veto it
-   python3 route.py --backlog --apply <report>   # does exactly the lines left
-   ```
-
-   Skip this step if you are happy for everything to be sorted straight away.
-   Items already in `~/Documents/Misc` can be previewed the same way with
-   `python3 route.py --backlog ~/Documents/Misc`. If your Mac is busy,
-   `./install.sh` notices and asks before it loads the background sorter (see
-   "Setting up your folders").
-
-5. **Turn it on:**
-
-   ```bash
-   ./install.sh
-   ```
-
-   It warns about missing tools, creates the folders, starts the background
-   jobs and shows a preview. If you skipped step 4, now set `model_path` in
-   `~/.mac-organizer/rules.local.toml`.
-
-6. **Use your Mac normally.** It is automatic from here:
-
-   | You… | mac-organizer… |
-   | --- | --- |
-   | download an image, audio, video or installer | moves it to `~/Media/…` or `~/Downloads/Installers` within about a minute |
-   | download a PDF, Word file, slides, code, a zip or a folder | has the local model read it and file it into the matching existing folder in `~/Documents`, or `~/Documents/Misc` if unsure |
-   | download the same file twice | sends the identical copy to the Trash |
-   | drop something on the Desktop | sorts it the same way |
-   | take a screenshot | files it under `~/Media/Screenshots/YYYY-MM/`, renamed by date |
-   | open a `.dmg` | ejects the disk 15 minutes later |
-   | drag a misfiled item to the right folder | learns from it for next time |
-
-   You get "Files are being sorted…" and then a clickable summary of what went
-   where; screenshots and installers are filed silently.
-
-**Good to know:** everything runs on your Mac (the model only listens on
-`127.0.0.1`); nothing is ever overwritten or permanently deleted (clashes get
-` -2`, discards go to the Trash); it only creates a folder when you say yes
-(see "Setting up your folders"), so organise `~/Documents` your way and it
-follows; every move is logged in
-`~/.local/state/mac-organizer/actions.log`; `./uninstall.sh` turns it off and
-leaves your files where they are.
-
-**Trying it out?** Please report anything odd (a wrong folder, a noisy
-notification, a slow sweep) as a GitHub issue, and include the relevant lines
-from `actions.log`.
-
-## Requirements
-
-- macOS
-- Python 3.11 or newer on your `PATH` (`brew install python`)
-- For smart sort and notifications (optional, `install.sh` tells you which are missing):
-  - `llama-server` (`brew install llama.cpp`) and a GGUF chat model
-  - `pdftotext` (`brew install poppler`) to read PDFs
-  - `terminal-notifier` (`brew install terminal-notifier`) to make the
-    notification summary clickable (without it, plain macOS notifications are used)
-
-Without these tools the rule-based routing still works; documents that need
-the model go to `~/Documents/Misc`.
+---
 
 ## Install
 
+Open the **Terminal** app (press ⌘ Space, type *Terminal*, press Enter), then
+copy and paste each step.
+
+**1. Install the helper tools**
+
 ```bash
-git clone <this repo> ~/.mac-organizer
+brew install python llama.cpp poppler terminal-notifier
+```
+
+**2. Download an AI model** *(optional, recommended)*
+
+Any "instruct" model in **GGUF** format from [Hugging Face](https://huggingface.co)
+works. A file of about 4–5 GB (look for **Q4_K_M** in the name) suits most
+Macs. Save it in a folder called `models` in your home folder.
+
+**3. Download mac-organizer**
+
+```bash
+git clone https://github.com/thealiceiris/mac-organizer.git ~/.mac-organizer
 cd ~/.mac-organizer
+```
+
+**4. Switch it on**
+
+```bash
 ./install.sh
 ```
 
-`install.sh`:
+It may ask you two questions. Both are optional, and the answer is **No**
+unless you type `y`:
 
-1. Warns, with one `brew install ...` line, about any missing external tools
-   (before anything is set up; a missing tool never stops the install).
-   (launchd's `PATH` lacks Homebrew, so the check also looks in
-   `/opt/homebrew/bin` and `/usr/local/bin`.)
-2. Runs `setup.py`, which creates `~/Inbox`, `~/Media/Images`,
-   `~/Media/Screenshots`, `~/Documents/Misc`, `~/Downloads/Installers`, and
-   the state directory; detects your screenshot location; generates
-   `rules.toml` and a personal `rules.local.toml`; installs the `launchd`
-   agents (one per watched folder plus a 10-minute sweep — five, or four when
-   your screenshots already land in a watched folder) — only when you said yes
-   to loading the sorter, or were not asked; and copies the Obsidian vault template to `~/Notes`
-   (never overwriting existing files).
-3. Loads the agents with `launchctl`.
-4. Prints a dry-run preview of what the router would do right now (smart-sort
-   items show as `SMART? <file> (model decides; fallback ...)`: the preview
-   never starts the model).
+- **"Your Documents folder is empty. Create starter folders…?"** Say yes if
+  you'd like a few ready-made folders (Work, School, Finance, Health,
+  Personal, Travel).
+- **"Load the background sorter now?"** This only appears if you already have
+  lots of files lying around. Say **No** if you'd like to see what it would do
+  first (see *Already have a messy Mac?* below).
 
-Then set `model_path` in `~/.mac-organizer/rules.local.toml` (see "Changing the
-model"); until you do, smart sort is off and documents go to `~/Documents/Misc`.
+**5. Tell it where your AI model is**
 
-Then open Obsidian and "Open folder as vault" → `~/Notes`.
-
-## Setting up your folders
-
-mac-organizer suggests folders and asks. The answer is always no until you say
-yes: nothing is created and nothing is started without your approval.
-
-**New to this (an empty Documents folder).** When `./install.sh` (or
-`python3 setup.py`) runs in a terminal and `~/Documents` has no folders of
-your own, it asks once:
-
-```
-Your Documents folder is empty. Create starter folders Work, School, Finance, Health, Personal, Travel? [y/N]
-```
-
-Only `y` or `yes` creates them; anything else (or just Enter) does not, and it
-is not asked again. Change the names under `[setup] starter_folders` in
-`rules.local.toml`.
-
-**Already have a lot of files.** If `~/Downloads` has more than 50 items or
-`~/Documents` more than 20 loose files, `./install.sh` tells you and asks
-`Load the background sorter now? [y/N]`. Answering no sets up folders and
-rules but writes no `launchd` agents, so nothing starts, not even at your next
-login; run `./install.sh` again when you are ready. Preview first, then
-approve (`python3 setup.py` on its own never writes or removes agents either):
+Open the settings file:
 
 ```bash
+open -e ~/.mac-organizer/rules.local.toml
+```
+
+Find the `model_path` line, remove the `#` at its start, and put in your
+model's file name, e.g. `model_path = "~/models/my-model.gguf"`. Save the file.
+That's it.
+
+---
+
+## Every day
+
+You don't need to do anything. Within about a minute of a file landing in
+Downloads or on your Desktop:
+
+| What arrives | Where it goes |
+| --- | --- |
+| Photos and pictures | `Media/Images` |
+| Music, voice notes | `Media/Audio` |
+| Videos | `Media/Video` |
+| Screenshots | `Media/Screenshots`, by month |
+| App installers (`.dmg`) | `Downloads/Installers` |
+| Documents, slides, spreadsheets, zips | the matching folder in **Documents**, or **Documents/Misc** if unsure |
+| The same file downloaded twice | the extra copy goes to the Trash |
+
+You'll see a short notification when it sorts documents, and a summary of where
+things went.
+
+**It filed something in the wrong place?** Just drag it to the right folder.
+It learns from that.
+
+**Opened an installer disk and forgot to close it?** It's ejected for you after
+15 minutes.
+
+---
+
+## Folder suggestions
+
+mac-organizer never creates folders on its own. Instead, when several files in
+**Misc** clearly belong together, it **asks you**, at most once a day:
+
+> 3 files in Misc look like Taxes. Open Folder Suggestions to review.
+
+Open the **Folder Suggestions** app (it's in your Applications folder, or press
+⌘ Space and type *Folder Suggestions*). It shows the files and asks:
+
+> **Create a "Taxes" folder in Documents?**
+> [ Not now ]  [ Never suggest this ]  [ **Create & move** ]
+
+You can change the name before clicking. Nothing happens unless you click
+**Create & move**. If you ignore it, nothing changes.
+
+---
+
+## Already have a messy Mac?
+
+If your Downloads or Documents are already full, you can **preview first**.
+Nothing moves until you say so.
+
+```bash
+cd ~/.mac-organizer
 python3 setup.py
 python3 route.py --backlog ~/Downloads ~/Documents
 ```
 
-Open the report. Besides the usual lines, topics the model keeps seeing may
-appear as commented-out suggestions:
+These two commands never start the background sorter.
 
-```
-#NEWFOLDER	<topic>	Taxes	7	return.pdf, w2.pdf
-```
+This writes a list of everything it *would* do and shows you where the list
+is. Open it in TextEdit:
 
-Remove the `#` before a `NEWFOLDER` line to accept it; edit only the folder name
-column (the third one). Leave the `#` and it is skipped. Then run
-`python3 route.py --backlog --apply <report>`. A name that is empty, contains
-`/`, starts with `.`, already exists or is nearly the same as an existing
-folder creates nothing (a near-duplicate offers the existing folder instead).
-Loose files in `~/Documents` are included in the preview; the live sorter never
-touches `~/Documents`. To preview what is already in `~/Documents/Misc`:
+- To **skip** a line, put `#` at the start of it.
+- Lines starting with `#NEWFOLDER` are **suggested new folders**. To accept
+  one, remove its `#`. You can change the folder name (the third column).
 
-```bash
-python3 route.py --backlog ~/Documents/Misc
-```
+When you're happy, run the command printed at the top of the list (it starts
+with `python3 route.py --backlog --apply`). Then switch on the everyday sorter
+with `./install.sh`.
 
-**Day to day.** When at least three files in `~/Documents/Misc` look like they
-belong together you get one notification at most every 24 hours:
+---
 
-> 7 files in Misc look like Taxes. Click to review.
-
-Clicking opens a dialog, `Create a "Taxes" folder in Documents?`, with the
-buttons `Not now` (asks again after 7 days), `Never suggest this` and
-`Create & move` (the default). The folder is created, and the listed files
-still in Misc are moved into it, only on `Create & move` (a file that arrived
-after the notification waits for a later suggestion). A name that cannot be
-used brings the dialog back with the reason on top. If a sort is running, the
-answer waits for it; should it still be busy after 15 minutes, the
-notification shows the exact command to run instead. An unanswered suggestion
-expires after 7 days and counts as `Not now`. Without `terminal-notifier` there
-is no notification; list and answer suggestions from the terminal:
-
-```bash
-python3 route.py --suggestions
-python3 route.py --accept-suggestion <topic> --name "<folder name>"   # quote a two-word topic
-python3 route.py --decline-suggestion <topic>          # not now
-python3 route.py --decline-suggestion <topic> --never  # never suggest this
-```
-
-**Subfolders as candidates.** The model can also file into the subfolders of
-folders you name in `expand`. Set it in `rules.local.toml`:
-
-```toml
-[smart_sort]
-expand = ["School", "Work"]
-```
-
-The default is `["Academics"]`. Each listed top-level folder contributes its
-first-level subfolders.
-
-## What gets moved where
-
-Routing is defined in `rules.toml` (generated from `rules.default.toml`).
-Defaults:
-
-| From | What | To |
-| --- | --- | --- |
-| Screenshots folder | `Screenshot *`, `Screen Recording *` | `~/Media/Screenshots/YYYY-MM/`, renamed `YYYY-MM-DD_HH-MM-SS` |
-| `~/Desktop` | `.app` bundles | `~/Downloads/Installers` |
-| `~/Desktop` | everything else (after 60s) | `~/Inbox` |
-| `~/Downloads`, `~/Inbox` | images (incl. `svg`) | `~/Media/Images` |
-| `~/Downloads`, `~/Inbox` | audio | `~/Media/Audio` |
-| `~/Downloads`, `~/Inbox` | video | `~/Media/Video` |
-| `~/Downloads`, `~/Inbox` | `.md` / `.txt` | `~/Notes/00-Inbox` |
-| `~/Downloads`, `~/Inbox` | dmg / pkg | `~/Downloads/Installers` |
-| `~/Downloads`, `~/Inbox` | keys and certificates (`pem p12 pfx cer crt asc gpg pgp`) | `~/Documents/Keys` (permissions 700) |
-| `~/Downloads`, `~/Inbox` | `.ics` calendar invites | Trash, after 24 hours |
-| `~/Downloads`, `~/Inbox` | zip / tar / gz archives containing an installer | `~/Downloads/Installers` |
-| `~/Downloads`, `~/Inbox` | other archives, documents (pdf, office, csv, ...) | smart sort (below), else `~/Documents/Misc` |
-| `~/Downloads`, `~/Inbox` | code and notebooks (`py ipynb html js json sh ...`) | smart sort, else `~/Documents/Misc` |
-| `~/Downloads` only | folders | `.app` bundles to Installers, the rest smart sort, else `~/Documents/Misc` |
-| `~/Downloads`, `~/Inbox` | anything else no rule places (`.epub`, `.class`, ...) | `~/Documents/Misc` |
-
-Archives are opened (read-only, never extracted to disk) to see whether they
-hold an installer. Anything no rule places goes to `~/Documents/Misc`; an `.ics` younger than a day waits until it can be trashed. Files are never
-overwritten (name collisions get a ` -2` suffix); the only things ever deleted
-are byte-identical duplicates and old `.ics` files, and both go to the Trash,
-not oblivion. Files newer than 60 seconds and partial downloads (`.crdownload`,
-`.part`, `.download`, `.tmp`) are skipped. Folders are handled in `~/Downloads`
-only.
-
-## Smart sort
-
-For documents, archives, code and folders, a local model reads a sample of the
-content (for an archive, the names inside it; for a folder, up to 200 of its
-paths and a few documents near its top) and picks the best existing folder. The candidates are the top-level
-folders of `~/Documents` (except `Inbox`, `Keys` and `Misc`) plus the folders one level
-inside `~/Documents/Academics` if you have one. **It does not create folders on its own** (it can only
-*suggest* them, see "Setting up your folders"):
-if the model is unsure (confidence below the `threshold`, default 0.6), or no
-folder fits, the item goes to `~/Documents/Misc` (the rule's `dest`).
-
-Privacy: everything is on-device. `llama-server` is started for each batch,
-listens on `127.0.0.1` only, is called with proxies bypassed, and is stopped
-when the batch ends (`--reasoning off`, `--offline`). Nothing is sent over the
-network, and nothing stays resident between batches.
-
-Settings live in `rules.local.toml`, which is created on install, git-ignored
-and never overwritten. Smart sort stays off until you set the model path
-(an unset or missing model counts as "model missing": rule fallbacks apply and
-you get at most one notice a day):
-
-```toml
-[smart_sort]
-model_path = "~/models/your-model.gguf"
-```
-
-Rules in `rules.local.toml` are evaluated before the shipped ones, so you can
-add personal rules there (see the commented example in the file).
-
-### Changing the model
-
-Any GGUF chat model that `llama-server` can load works. Download one, set
-`model_path` under `[smart_sort]` in `rules.local.toml` (also required after a
-fresh install), and you are done; the
-next batch uses it. To check that a model behaves, run the opt-in live test,
-which starts the real server and classifies a few sample documents:
-
-```bash
-MAC_ORGANIZER_LIVE=1 MAC_ORGANIZER_MODEL=~/models/your-model.gguf \
-  python3 -m pytest tests/test_classify_live.py -q -s
-```
-
-Smaller models are faster; larger ones are more accurate on ambiguous files.
-
-## Duplicates
-
-A file that is byte-identical to one already at the destination is moved to the
-Trash instead of being stored again (and logged).
-
-## Notifications
-
-You get a notification when the model starts on a batch and a summary when it
-ends (also when smart-sorted items moved without the model, e.g. to
-Misc). With `terminal-notifier` installed, clicking the summary opens a report
-of what went where; without it, mac-organizer falls back to macOS's built-in
-`osascript display notification` (not clickable). Batches handled purely by
-rules are silent.
-
-"Files are being sorted…" is sent only once the model has started; a run that
-sent it always ends with a summary. If the model cannot be started (or its
-file is missing), you get at most one notice a day saying files will wait in
-Misc, and a model that failed to start is not tried again for 24 hours.
-An item the model fails on three sweeps in a row is left where it is until it
-changes. `llama-server`'s own output from the last start is in
-`~/.local/state/mac-organizer/llama-server.log`.
-
-## Learning from your corrections
-
-If you move a sorted file to a different folder in Finder, mac-organizer
-notices (within a 30-day window) and remembers. Similar past corrections are
-shown to the model as examples on later runs. "Unsure" verdicts
-are cached too, so a file the model could not place is not re-classified on
-every sweep; that cache is dropped when the set of candidate folders changes or
-you make a new correction. This memory lives in
-`~/.local/state/mac-organizer`.
-
-## Disk images
-
-Mounted installer disk images (`.dmg`) are ejected automatically once they have
-been mounted for 15 minutes. It is never forced: an image that is busy stays
-mounted.
-
-## Cleaning up a backlog
-
-To sort an existing pile in one go, plan first, review, then apply:
-
-```bash
-python3 ~/.mac-organizer/route.py --backlog --dry-run ~/Documents/Inbox ~/Downloads
-```
-
-This moves nothing and prints the path of a TSV report in
-`~/.local/state/mac-organizer/reports/`, one line per proposed action. Open it
-and delete any line you do not want (your veto), then:
-
-```bash
-python3 ~/.mac-organizer/route.py --backlog --apply ~/.local/state/mac-organizer/reports/backlog-XXXX.tsv
-```
-
-Each remaining line is validated again before it runs; malformed lines abort
-the apply, and files that changed since the plan was made are skipped.
-Vetoed lines for items in `~/Downloads` are remembered: the regular sorting
-leaves those items alone until they change.
-
-## Upgrading from v1
-
-Do the first v2 clean-up as a reviewed backlog, with the agents stopped so
-nothing moves behind your back:
-
-1. Stop the v1 agents: `./uninstall.sh` (your files and rules stay).
-2. Run `python3 setup.py`. It backs up your existing `rules.toml` to
-   `rules.toml.v1.bak`, generates the v2 rules and a `rules.local.toml`
-   (it writes no `launchd` agents, so nothing starts). Re-apply your own edits
-   through `rules.local.toml`.
-3. Set `model_path` under `[smart_sort]` in `rules.local.toml`.
-4. Plan the backlog, review the report, then apply it:
-   `python3 route.py --backlog ~/Documents/Inbox ~/Downloads`, then
-   `python3 route.py --backlog --apply <report>` (see "Cleaning up a backlog").
-5. Load the agents: `./install.sh`.
-
-## Changing the rules
-
-Edit `~/.mac-organizer/rules.toml` (or add rules to `rules.local.toml`, which
-are evaluated first). Each `[[rule]]` has a `source` folder and an `action`:
-
-- `move`: move to `dest`;
-- `move_and_timestamp`: move to `dest`, renamed to its date and time;
-- `trash`: move to the Trash (no `dest`);
-- `smart`: let the model pick a folder in `~/Documents`; `dest` is the
-  fallback when it is unsure (`dest = ""`: the item stays where it is);
-- `skip`: leave matching items alone (shadows later rules).
-
-Optional filters, all of which must match:
-
-- `ext`: list of extensions; `glob`: a name pattern; `min_age_seconds`;
-- `kind`: `"file"` (default) or `"dir"` for folders (folders are handled in
-  `~/Downloads`, and `.app` bundles on the Desktop); symlinks never match;
-- `name_regex`: a case-insensitive regular expression searched in the name;
-- `has_installer`: `true`/`false`, for archives: whether one holds an `.app`,
-  `.pkg`, `.dmg`, `.exe` or `.msi`.
-
-Rules are evaluated top to bottom per source folder; the first match wins. A
-rule with an unknown `kind` or a `name_regex` that does not compile is
-reported when the rules load (naming the rule) and nothing is moved.
-
-Changing the filters or the `dest` of a rule needs no restart — the next run
-picks up the changes. **Adding a rule with a new `source` folder does need
-`./install.sh` re-run**: the agents watch a fixed set of folders
-(`~/Downloads`, `~/Desktop`, `~/Inbox`, and your screenshot folder), so a
-folder nothing watches is never visited. `dest` folders may be anywhere under
-your home directory; a destination outside `$HOME` is refused and logged.
-
-To preview without moving anything:
-
-```bash
-python3 ~/.mac-organizer/route.py --dry-run
-```
-
-## Logs
-
-Every move is logged to `~/.local/state/mac-organizer/actions.log`, one line
-per action, naming the path the file actually landed on. Agent stdout/stderr
-go to `~/.local/state/mac-organizer/com.mac-organizer.*.log`.
-
-Several agents can fire at once, so each run takes an exclusive lock on
-`~/.local/state/mac-organizer/route.lock`; a run that finds the lock held
-exits immediately (the next trigger or the 10-minute sweep picks the work
-up). Destination names are claimed atomically, so even concurrent runs never
-overwrite a file — collisions get a ` -2` suffix.
-
-## After changing your screenshot location or upgrading Python
-
-Re-run `./install.sh`. It regenerates the agents (the Python path is baked
-into them) and, if `rules.toml` does not yet exist, regenerates it with the
-new screenshot path. To force `rules.toml` regeneration, delete it first
-(your edits will be lost).
-
-## Uninstall
+## Turn it off
 
 ```bash
 cd ~/.mac-organizer
 ./uninstall.sh
 ```
 
-Removes the `launchd` agents only. Your files, `rules.toml`, `~/Notes`, and
-logs are left in place.
+Your files stay exactly where they are.
 
-## Optional Obsidian plugins
+---
 
-The vault ships with core plugins configured (Templates, Daily Notes, Tags).
-For faster capture, consider the community plugins **Templater** and
-**QuickAdd** — install them from within Obsidian.
+## Privacy
 
-## Development
+Everything happens on your Mac. The AI model runs locally and only talks to
+your own computer. No file, name or content is ever sent over the internet.
 
-```bash
-python3 -m pytest -q
-```
+---
+
+## Want more control?
+
+Rules, settings, logs and every command are explained in the
+**[advanced guide](ADVANCED.md)**.
+
+Found a problem? Please open an issue on GitHub and describe what happened.
+The file `~/.local/state/mac-organizer/actions.log` lists every move it made,
+which helps a lot.

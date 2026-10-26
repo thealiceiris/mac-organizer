@@ -1,10 +1,11 @@
 from pathlib import Path
 
 README = Path(__file__).resolve().parent.parent / "README.md"
+ADVANCED = README.parent / "ADVANCED.md"
 
 
 def test_readme_covers_key_topics():
-    text = README.read_text().lower()
+    text = ADVANCED.read_text().lower()
     for topic in [
         "./install.sh",
         "./uninstall.sh",
@@ -17,7 +18,7 @@ def test_readme_covers_key_topics():
 
 
 def test_readme_documents_v2():
-    text = README.read_text()
+    text = ADVANCED.read_text()
     for topic in ["rules.local.toml", "--backlog", "Documents/Keys", "eject",
                   "Changing the model", "terminal-notifier"]:
         assert topic in text, topic
@@ -26,7 +27,7 @@ def test_readme_documents_v2():
 
 def test_no_personal_paths_in_published_files():
     root = README.parent
-    files = [README, root / "rules.default.toml", root / "rules.local.default.toml"]
+    files = [README, ADVANCED, root / "rules.default.toml", root / "rules.local.default.toml"]
     for f in files:
         text = f.read_text()
         assert "/Users/" not in text, f.name
@@ -40,7 +41,7 @@ def _section(text, heading):
 
 
 def test_readme_final_review_accuracy():
-    text = README.read_text()
+    text = ADVANCED.read_text()
     assert "installer or code" not in text  # archives are inspected for installers only
     assert "placements are shown" not in text.lower()  # only corrections reach the model
     rules = _section(text, "Changing the rules")
@@ -61,25 +62,38 @@ def test_live_model_test_takes_the_model_from_the_environment():
 
 
 def test_readme_documents_suggestions_and_expand():
-    text = README.read_text()
+    text = ADVANCED.read_text()
     section = _section(text, "Setting up your folders")
     for needle in [
         "starter", "python3 setup.py", "python3 route.py --backlog ~/Downloads ~/Documents",
-        "NEWFOLDER", "#", "folder name", "~/Documents/Misc", "Click to review",
+        "NEWFOLDER", "#", "folder name", "~/Documents/Misc", "Open Folder Suggestions to review", "--review-pending",
         "--suggestions", "--accept-suggestion", "--decline-suggestion",
         "terminal-notifier", "expand", "rules.local.toml", "[y/N]",
     ]:
         assert needle in section, needle
-    assert "python3 route.py --backlog ~/Downloads ~/Documents" in text.split("## Requirements")[0]
     assert "never creates folders" not in text
 
 
 def test_readme_setup_py_never_starts_the_sorter():
     """C1: plain setup.py writes no agents; the README must not say otherwise."""
-    text = README.read_text()
+    text = ADVANCED.read_text()
     assert "writes the agents but does not load them" not in text
     assert "would load at your next login" not in text
     upgrade = _section(text, "Upgrading from v1")
     assert "writes no `launchd` agents" in upgrade
-    quick = _section(text, "Quick start")
-    assert "writes no launchd agents" in quick
+    messy = _section(README.read_text(), "Already have a messy Mac?")
+    assert "never start the background sorter" in messy
+
+
+def test_plain_readme_is_for_everyone():
+    text = README.read_text()
+    for section in ["## What you need", "## Install", "## Every day", "## Folder suggestions",
+                    "## Already have a messy Mac?", "## Turn it off", "## Privacy"]:
+        assert section in text, section
+    assert "ADVANCED.md" in text
+    assert "Folder Suggestions" in text and "Open Folder Suggestions to review" in text
+    assert "python3 route.py --backlog ~/Downloads ~/Documents" in text
+    # no jargon in the plain guide
+    for jargon in ["launchd", "--review-suggestion", "name_regex", "has_installer", "SmartRouter"]:
+        assert jargon not in text, jargon
+    assert len(text.splitlines()) < 200

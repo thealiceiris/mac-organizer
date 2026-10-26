@@ -280,3 +280,19 @@ long-time users.)*
   long for `display dialog`, truncate it.
 - Suggestion id format.
 - How `misc-topics.jsonl` is pruned (drop entries whose item has left `Misc`).
+
+## Amendment (2026-10-27): Folder Suggestions app; plain README
+
+The live click test was inconclusive on macOS 27, and terminal-notifier is
+unmaintained, so reviewing a suggestion no longer depends on a notification
+click (the user's decision):
+
+- `install.sh` (`setup.py --agents`) builds `~/Applications/Folder Suggestions.app`,
+  which runs `route.py --review-pending`. That reviews the waiting suggestion
+  (or a due one, which is then marked sent), or shows
+  "No folder suggestions right now." `uninstall.sh` removes the app.
+- The notification copy becomes
+  `<n> files in Misc look like <Name>. Open Folder Suggestions to review.`
+  Clicking still works where macOS allows it.
+- The README is rewritten in plain language for non-technical users. The
+  previous technical README becomes `ADVANCED.md`.
