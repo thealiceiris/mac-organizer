@@ -110,10 +110,10 @@ def move_dir_no_clobber(src: Path, dst: Path, mkdir: bool = True) -> Path:
         return candidate
 
 
-def move_item(src: Path, dst: Path) -> Path:
+def move_item(src: Path, dst: Path, mkdir: bool = True) -> Path:
     if src.is_dir() and not src.is_symlink():
-        return move_dir_no_clobber(src, dst)
-    return move_no_clobber(src, dst)
+        return move_dir_no_clobber(src, dst, mkdir=mkdir)
+    return move_no_clobber(src, dst, mkdir=mkdir)
 
 
 def trash(path: Path, trash_dir: Path | None = None) -> Path:

@@ -34,6 +34,7 @@ class AcceptResult:
     moved: list[Path] = field(default_factory=list)
     error: str | None = None
     similar: str | None = None
+    gone: int = 0  # listed files (shown in the dialog) that are no longer in Misc
 
 
 def _read(path: Path):
@@ -87,8 +88,31 @@ def _never(state: Path) -> set[str]:
     return {k for k in raw if isinstance(k, str)} if isinstance(raw, list) else set()
 
 
-def due(state, misc_dir, documents_root, expand, settings, now) -> Suggestion | None:
+def _expire(data: dict, now: float, settings) -> bool:
+    """Move suggestions unanswered for ``expire_days`` to snoozed; True if any moved.
+
+    The snooze counts from when the suggestion expired, not from when this
+    runs, so an ignored topic comes back on schedule however late it is seen.
+    """
+    expired = [k for k, v in data["pending"].items()
+               if now - v["sent_at"] > settings.expire_days * DAY]
+    for k in expired:
+        sent_at = data["pending"].pop(k)["sent_at"]
+        data["snoozed"][k] = sent_at + (settings.expire_days + settings.snooze_days) * DAY
+    return bool(expired)
+
+
+def _load_live(state, now, settings, write: bool) -> dict:
     data = _load(state)
+    if _expire(data, now, settings) and write:
+        _save(state, data)
+    return data
+
+
+def due(state, misc_dir, documents_root, expand, settings, now,
+        write: bool = True) -> Suggestion | None:
+    """The topic to offer now, if any. Expires ignored suggestions first (``write``: saved)."""
+    data = _load_live(state, now, settings, write)
     if data["last_sent"] is not None and now - data["last_sent"] < DAY:
         return None
     never = _never(state)
@@ -98,7 +122,8 @@ def due(state, misc_dir, documents_root, expand, settings, now) -> Suggestion | 
             continue
         if data["snoozed"].get(key, 0) > now:
             continue
-        if topics.near_duplicate(name, documents_root, tuple(expand)):
+        name, err, similar = check_name(name, documents_root, expand)
+        if err or similar:  # not a folder that could be created, or one already exists
             continue
         if best is None or len(items) > len(best[1]) or (len(items) == len(best[1]) and key < best[0]):
             best = (key, items, name)
@@ -114,14 +139,8 @@ def mark_sent(state, s: Suggestion, now) -> None:
     _save(state, data)
 
 
-def pending(state, now, settings) -> list[Suggestion]:
-    data = _load(state)
-    expired = [k for k, v in data["pending"].items() if now - v["sent_at"] > settings.expire_days * DAY]
-    for k in expired:
-        del data["pending"][k]
-        data["snoozed"][k] = now + settings.snooze_days * DAY
-    if expired:
-        _save(state, data)
+def pending(state, now, settings, write: bool = True) -> list[Suggestion]:
+    data = _load_live(state, now, settings, write)
     return [Suggestion(k, v["name"], v["items"], v["sent_at"]) for k, v in data["pending"].items()]
 
 
@@ -142,22 +161,41 @@ def _drop(state, key) -> None:
         _save(state, data)
 
 
-def _remaining(state, key, misc_dir) -> list[Path]:
+def _remaining(state, key, misc_dir) -> tuple[list[Path], int]:
+    """(items to move, how many listed items are gone).
+
+    Only the files the user was shown (saved when the suggestion was sent)
+    that are still in this topic in Misc: a file that arrived later is not moved.
+    """
+    listed = _load(state)["pending"][key]["items"]
     got = topics.clusters(state, misc_dir).get(key)
-    return [p for p in got[1] if p.exists()] if got else []
+    current = {p for p in got[1] if p.exists()} if got else set()
+    keep = [Path(p) for p in listed if Path(p) in current]
+    return keep, len(listed) - len(keep)
 
 
 def _move_all(items, dest: Path, log) -> tuple[list[Path], str | None]:
     moved, err = [], None
     for src in items:
-        try:
-            used = fsops.move_item(src, dest / src.name)
+        try:  # mkdir=False: a folder that vanished meanwhile is never recreated
+            used = fsops.move_item(src, dest / src.name, mkdir=False)
         except OSError as exc:
             err = f"could not move {src.name}: {exc}"
             continue
         moved.append(used)
         log("SUGGEST", src, used)
     return moved, err
+
+
+def _inside(path: Path, root: Path) -> bool:
+    """``path`` resolves inside the resolved ``root`` and inside $HOME (symlinks followed)."""
+    import route  # route imports this module; resolved at call time
+
+    try:
+        resolved, top = Path(path).resolve(), Path(root).resolve()
+    except OSError:
+        return False
+    return (resolved == top or top in resolved.parents) and route.within_home(Path(path))
 
 
 def check_name(name, documents_root, expand) -> tuple[str, str | None, str | None]:
@@ -177,16 +215,19 @@ def check_name(name, documents_root, expand) -> tuple[str, str | None, str | Non
 def accept(state, key, name, misc_dir, documents_root, expand, log) -> AcceptResult:
     if key not in _load(state)["pending"]:
         return AcceptResult(error="no such suggestion")
-    items = _remaining(state, key, misc_dir)
+    items, gone = _remaining(state, key, misc_dir)
     if not items:
         _drop(state, key)
-        return AcceptResult(error="those files are no longer in Misc")
+        return AcceptResult(error="those files are no longer in Misc", gone=gone)
     name, err, similar = check_name(name, documents_root, expand)
     if err:
         return AcceptResult(error=err)
     if similar:
         return AcceptResult(similar=similar)
-    folder = Path(documents_root) / name
+    root = Path(documents_root)
+    if not root.is_dir() or not _inside(root, root):
+        return AcceptResult(error="the Documents folder is not inside your home folder")
+    folder = root / name
     try:
         folder.mkdir()
     except FileExistsError:
@@ -195,17 +236,18 @@ def accept(state, key, name, misc_dir, documents_root, expand, log) -> AcceptRes
         return AcceptResult(error=f"Could not create \"{name}\": {exc}")
     log("NEWFOLDER", Path(misc_dir), folder)
     moved, err = _move_all(items, folder, log)
-    _drop(state, key)
-    return AcceptResult(created=folder, moved=moved, error=err)
+    if moved:  # nothing moved: still pending, so it can be answered again
+        _drop(state, key)
+    return AcceptResult(created=folder, moved=moved, error=err, gone=gone)
 
 
 def accept_into_existing(state, key, existing, misc_dir, documents_root, log) -> AcceptResult:
     if key not in _load(state)["pending"]:
         return AcceptResult(error="no such suggestion")
-    items = _remaining(state, key, misc_dir)
+    items, gone = _remaining(state, key, misc_dir)
     if not items:
         _drop(state, key)
-        return AcceptResult(error="those files are no longer in Misc")
+        return AcceptResult(error="those files are no longer in Misc", gone=gone)
     root = Path(documents_root)
     parts = (existing or "").split("/")
     if not existing or any(p in ("", ".", "..") or p.startswith(".") for p in parts) or len(parts) > 2:
@@ -213,6 +255,9 @@ def accept_into_existing(state, key, existing, misc_dir, documents_root, log) ->
     dest = root.joinpath(*parts)
     if dest.is_symlink() or not dest.is_dir():
         return AcceptResult(error="that folder no longer exists")
+    if not _inside(dest, root):  # e.g. a symlinked Documents/Academics pointing elsewhere
+        return AcceptResult(error="that folder is not inside Documents in your home folder")
     moved, err = _move_all(items, dest, log)
-    _drop(state, key)
-    return AcceptResult(moved=moved, error=err)
+    if moved:
+        _drop(state, key)
+    return AcceptResult(moved=moved, error=err, gone=gone)

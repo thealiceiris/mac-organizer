@@ -12,7 +12,8 @@ NOW = 1_000_000.0
 
 
 @pytest.fixture
-def env(tmp_path):
+def env(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))  # accept refuses folders outside $HOME
     state, misc, docs = tmp_path / "state", tmp_path / "Misc", tmp_path / "Documents"
     for d in (state, misc, docs):
         d.mkdir()
@@ -186,3 +187,143 @@ def test_corrupt_state_reads_as_empty(env):
     assert suggest.due(state, misc, docs, (), S, NOW).key == "travel"
     suggest.decline(state, "travel", NOW, S, never=True)
     assert json.loads((state / "never.json").read_text())
+
+
+# ---------------------------------------------------------------- final review fixes
+
+
+def test_ignored_suggestion_expires_inside_due_without_any_cli_call(env):
+    """I2: due() itself expires an ignored suggestion; snooze counts from expiry, not now."""
+    state, misc, docs, *_ = env
+    add(env, "Travel", 3)
+    suggest.mark_sent(state, suggest.due(state, misc, docs, (), S, NOW), NOW)
+    assert suggest.due(state, misc, docs, (), S, NOW + 8 * DAY) is None  # snoozed
+    data = json.loads((state / "suggestions.json").read_text())
+    assert data["pending"] == {}
+    assert data["snoozed"]["travel"] == NOW + 14 * DAY  # sent_at + expire + snooze
+    assert suggest.due(state, misc, docs, (), S, NOW + 13 * DAY) is None
+    s = suggest.due(state, misc, docs, (), S, NOW + 15 * DAY)
+    assert s is not None and s.key == "travel"
+
+
+def test_ignored_suggestion_first_seen_late_is_not_snoozed_from_now(env):
+    state, misc, docs, *_ = env
+    add(env, "Travel", 3)
+    suggest.mark_sent(state, suggest.due(state, misc, docs, (), S, NOW), NOW)
+    # nothing ran for 30 days: the topic may be offered straight away
+    assert suggest.due(state, misc, docs, (), S, NOW + 30 * DAY).key == "travel"
+
+
+def test_due_and_pending_can_read_without_writing(env):
+    state, misc, docs, *_ = env
+    add(env, "Travel", 3)
+    suggest.mark_sent(state, suggest.due(state, misc, docs, (), S, NOW), NOW)
+    before = (state / "suggestions.json").read_text()
+    assert suggest.pending(state, NOW + 8 * DAY, S, write=False) == []
+    assert suggest.due(state, misc, docs, (), S, NOW + 8 * DAY, write=False) is None
+    assert (state / "suggestions.json").read_text() == before
+
+
+def test_due_skips_clusters_whose_name_is_not_a_valid_folder(env):
+    state, misc, docs, *_ = env
+    add(env, "a:b", 5, prefix="colon")
+    add(env, ".hidden", 5, prefix="dot")
+    add(env, "Travel", 3)
+    assert suggest.due(state, misc, docs, (), S, NOW).key == "travel"
+
+
+def test_accept_moves_only_the_files_the_user_saw(env):
+    """I7: a file that joined the cluster after the notification stays in Misc."""
+    state, misc, docs, log, logs = env
+    s, items = sent(env, "Travel", 3)
+    late = add(env, "Travel", 1, prefix="late")[0]
+    r = suggest.accept(state, s.key, "Trips", misc, docs, (), log)
+    assert r.error is None and len(r.moved) == 3 and r.gone == 0
+    assert late.exists() and not (docs / "Trips" / late.name).exists()
+
+
+def test_accept_reports_listed_files_no_longer_in_misc(env):
+    state, misc, docs, log, logs = env
+    s, items = sent(env, "Travel", 4)
+    items[0].unlink()
+    items[1].rename(docs / items[1].name)
+    r = suggest.accept(state, s.key, "Trips", misc, docs, (), log)
+    assert len(r.moved) == 2 and r.gone == 2
+
+
+def test_accept_into_existing_moves_only_the_files_the_user_saw(env):
+    state, misc, docs, log, logs = env
+    (docs / "Trips").mkdir()
+    s, items = sent(env, "Travel", 3)
+    late = add(env, "Travel", 1, prefix="late")[0]
+    items[0].unlink()
+    r = suggest.accept_into_existing(state, s.key, "Trips", misc, docs, log)
+    assert len(r.moved) == 2 and r.gone == 1 and late.exists()
+
+
+def test_accept_into_existing_refuses_a_symlinked_parent_outside_home(env, tmp_path, monkeypatch):
+    """I6: Documents/Academics -> a folder outside $HOME must never receive files."""
+    state, misc, docs, log, logs = env
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    outside = tmp_path / "outside"
+    (outside / "Trips").mkdir(parents=True)
+    hd, hm, hs = home / "Documents", home / "Documents" / "Misc", home / "state"
+    hm.mkdir(parents=True)
+    hs.mkdir()
+    (hd / "Academics").symlink_to(outside)
+    paths = []
+    for i in range(3):
+        p = hm / f"t-{i}.txt"
+        p.write_text("x")
+        topics.record(hs, p, "Travel", NOW)
+        paths.append(p)
+    s = suggest.due(hs, hm, hd, ("Academics",), S, NOW)
+    suggest.mark_sent(hs, s, NOW)
+    r = suggest.accept_into_existing(hs, s.key, "Academics/Trips", hm, hd, log)
+    assert r.error and r.moved == []
+    assert all(p.exists() for p in paths) and list((outside / "Trips").iterdir()) == []
+    assert [x.key for x in suggest.pending(hs, NOW, S)] == [s.key]
+
+
+def test_accept_into_existing_refuses_a_symlinked_top_level_inside_home(env, tmp_path):
+    state, misc, docs, log, logs = env
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (docs / "Trips").symlink_to(elsewhere)
+    s, items = sent(env, "Travel", 3)
+    r = suggest.accept_into_existing(state, s.key, "Trips", misc, docs, log)
+    assert r.error and r.moved == [] and all(p.exists() for p in items)
+
+
+def test_accept_refuses_a_documents_root_outside_home(env, tmp_path, monkeypatch):
+    state, misc, docs, log, logs = env
+    s, items = sent(env, "Travel", 3)
+    monkeypatch.setenv("HOME", str(tmp_path / "elsewhere"))
+    (tmp_path / "elsewhere").mkdir()
+    r = suggest.accept(state, s.key, "Trips", misc, docs, (), log)
+    assert r.error and r.created is None and not (docs / "Trips").exists()
+    assert all(p.exists() for p in items)
+
+
+def test_move_all_never_recreates_a_vanished_folder(env, tmp_path):
+    state, misc, docs, log, logs = env
+    f = misc / "a.txt"
+    f.write_text("x")
+    moved, err = suggest._move_all([f], tmp_path / "gone", log)
+    assert moved == [] and err and f.exists() and not (tmp_path / "gone").exists()
+
+
+def test_accept_keeps_suggestion_pending_when_nothing_moved(env, monkeypatch):
+    state, misc, docs, log, logs = env
+    s, items = sent(env, "Travel", 3)
+
+    def fail(src, dst, mkdir=True):
+        raise OSError("disk says no")
+
+    monkeypatch.setattr(suggest.fsops, "move_item", fail)
+    r = suggest.accept(state, s.key, "Trips", misc, docs, (), log)
+    assert r.created == docs / "Trips" and r.moved == [] and r.error
+    assert (docs / "Trips").is_dir()  # nothing is removed
+    assert [x.key for x in suggest.pending(state, NOW, S)] == [s.key]
