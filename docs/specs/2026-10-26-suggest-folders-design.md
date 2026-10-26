@@ -1,7 +1,7 @@
 # mac-organizer: suggest-and-ask folders — Design
 
 **Date:** 2026-10-26
-**Status:** Draft, awaiting approval
+**Status:** Approved 2026-10-26
 **Builds on:** `2026-10-25-mac-organizer-v2-design.md` (v2, live; plus the Misc amendment)
 
 ## Why
