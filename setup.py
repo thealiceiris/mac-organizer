@@ -19,7 +19,6 @@ DIRS_TO_CREATE = [
     "~/Media/Audio",
     "~/Media/Video",
     "~/Media/Screenshots",
-    "~/Documents/Inbox",
     "~/Documents/Misc",
     "~/Documents/Keys",
     "~/Downloads/Installers",

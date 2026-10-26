@@ -5,6 +5,18 @@
 # Personal rules and [smart_sort] settings go in rules.local.toml (git-ignored);
 # its rules are evaluated before these.
 
+[smart_sort]
+# Top-level Documents folders whose subfolders are also filing targets.
+expand = ["Academics"]
+
+[suggest]
+min_items = 3      # files in Misc needed before a folder is suggested
+snooze_days = 7    # "Not now" hides a suggestion this long
+expire_days = 7    # an unanswered suggestion counts as "Not now" after this
+
+[setup]
+starter_folders = ["Work", "School", "Finance", "Health", "Personal", "Travel"]
+
 # --- Screenshots -----------------------------------------------------------
 [[rule]]
 source = "@@SCREENSHOT_DIR@@"

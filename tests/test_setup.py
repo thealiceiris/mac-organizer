@@ -169,3 +169,10 @@ def test_write_local_rules_never_overwrites(tmp_path):
     out.write_text("mine\n")
     assert setup.write_local_rules(template, out) is False
     assert out.read_text() == "mine\n"
+
+
+def test_setup_no_longer_creates_documents_inbox(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    setup.make_dirs()
+    assert not (tmp_path / "Documents/Inbox").exists()
+    assert (tmp_path / "Documents/Misc").is_dir()

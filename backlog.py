@@ -443,7 +443,7 @@ class _Checker:
         self.leftovers = {(downloads / n) for n in LEFTOVER_DIRS}
         self.sources = {downloads, _inbox().resolve(), *self.leftovers,
                         *(r.source.resolve() for r in config.rules)}
-        self.cands = {c.name: c.path for c in classify.candidates(config.smart.documents_root)}
+        self.cands = {c.name: c.path for c in classify.candidates(config.smart.documents_root, config.smart.expand)}
         # routing without a model: smart items get their rule's fallback (or stay)
         off = replace(config.smart, enabled=False, model_path=None)
         self.router = route.SmartRouter(off, route.default_state_dir(), _no_model,

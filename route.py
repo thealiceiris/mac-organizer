@@ -46,12 +46,30 @@ class SmartSettings:
     threshold: float
     model_path: Path | None
     documents_root: Path
+    expand: tuple[str, ...] = ("Academics",)
+
+
+@dataclass(frozen=True)
+class SuggestSettings:
+    min_items: int = 3
+    snooze_days: int = 7
+    expire_days: int = 7
+
+
+DEFAULT_STARTER_FOLDERS = ("Work", "School", "Finance", "Health", "Personal", "Travel")
+
+
+@dataclass(frozen=True)
+class SetupSettings:
+    starter_folders: tuple[str, ...] = DEFAULT_STARTER_FOLDERS
 
 
 @dataclass(frozen=True)
 class Config:
     rules: list[Rule]
     smart: SmartSettings
+    suggest: SuggestSettings = SuggestSettings()
+    setup: SetupSettings = SetupSettings()
 
 
 def _norm_ext(values) -> frozenset[str]:
@@ -117,8 +135,19 @@ def load_config(rules_path: Path, local_path: Path | None) -> Config:
         threshold=float(smart.get("threshold", 0.6)),
         model_path=Path(model).expanduser() if model else None,
         documents_root=Path(smart.get("documents_root", "~/Documents")).expanduser(),
+        expand=tuple(str(x) for x in smart.get("expand", ["Academics"])),
     )
-    return Config(rules=_parse_rules(local) + _parse_rules(shipped), smart=settings)
+    sug = {**shipped.get("suggest", {}), **local.get("suggest", {})}
+    suggest = SuggestSettings(
+        min_items=int(sug.get("min_items", 3)),
+        snooze_days=int(sug.get("snooze_days", 7)),
+        expire_days=int(sug.get("expire_days", 7)),
+    )
+    stp = {**shipped.get("setup", {}), **local.get("setup", {})}
+    setup_settings = SetupSettings(
+        starter_folders=tuple(str(x) for x in stp.get("starter_folders", DEFAULT_STARTER_FOLDERS)))
+    return Config(rules=_parse_rules(local) + _parse_rules(shipped), smart=settings,
+                  suggest=suggest, setup=setup_settings)
 
 
 def load_rules(path: Path) -> list[Rule]:
@@ -485,7 +514,7 @@ class SmartRouter:
 
     def candidates(self) -> list:
         if self._cands is None:
-            self._cands = classify.candidates(self.settings.documents_root)
+            self._cands = classify.candidates(self.settings.documents_root, self.settings.expand)
         return self._cands
 
     def _verdict_cache(self):

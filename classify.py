@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 EXCLUDED_TOP = {"Inbox", "Keys", "Misc"}
-COURSES_DIR = "Academics"
 MAX_EXAMPLES = 5
 MAX_SAMPLE_CHARS = 12_000
 MAX_REASON = 200
@@ -94,16 +93,16 @@ def _examples(folder: Path) -> tuple[str, ...]:
     return tuple(p.name for p in sorted(entries, key=key)[:MAX_EXAMPLES])
 
 
-def candidates(documents_root: Path) -> list[Candidate]:
+def candidates(documents_root: Path, expand: tuple[str, ...] = ("Academics",)) -> list[Candidate]:
     root = Path(documents_root)
     found: dict[str, Path] = {}
     for top in _visible_dirs(root):
         if top.name in EXCLUDED_TOP:
             continue
         found[top.name] = top
-        if top.name == COURSES_DIR:
-            for course in _visible_dirs(top):
-                found[f"{COURSES_DIR}/{course.name}"] = course
+        if top.name in expand:
+            for sub in _visible_dirs(top):
+                found[f"{top.name}/{sub.name}"] = sub
     return [Candidate(name, found[name], _examples(found[name])) for name in sorted(found)]
 
 

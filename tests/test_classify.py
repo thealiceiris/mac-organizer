@@ -580,3 +580,19 @@ def test_server_without_state_dir_discards_output(model, fast):
     with classify.LlamaServer(model, popen=Popen(), urlopen=FakeUrlopen()):
         pass
     assert seen["stdout"] == subprocess.DEVNULL
+
+
+def test_candidates_expand_configurable(tmp_path):
+    root = _docs(tmp_path)
+    (root / "School/Maths").mkdir(parents=True)
+    names = [c.name for c in classify.candidates(root, expand=("School",))]
+    assert "School/Maths" in names
+    assert "Academics" in names
+    assert not any(n.startswith("Academics/") for n in names)
+
+
+def test_candidates_default_expand_is_academics(tmp_path):
+    root = _docs(tmp_path)
+    names = [c.name for c in classify.candidates(root)]
+    assert "Academics/Natural Language Processing" in names
+    assert names == [c.name for c in classify.candidates(root, expand=("Academics",))]

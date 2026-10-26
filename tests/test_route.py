@@ -992,3 +992,22 @@ def test_main_reports_a_bad_rule_cleanly(tmp_path, monkeypatch, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "rule 1" in err and "kind" in err
+
+
+def test_load_config_expand_and_suggest_defaults(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    shipped = tmp_path / "rules.toml"
+    shipped.write_text("")
+    cfg = route.load_config(shipped, None)
+    assert cfg.smart.expand == ("Academics",)
+    assert cfg.suggest == route.SuggestSettings(min_items=3, snooze_days=7, expire_days=7)
+    assert cfg.setup.starter_folders == (
+        "Work", "School", "Finance", "Health", "Personal", "Travel")
+
+    local = tmp_path / "rules.local.toml"
+    local.write_text('[smart_sort]\nexpand = ["Work"]\n[suggest]\nmin_items = 5\n'
+                     '[setup]\nstarter_folders = ["A"]\n')
+    cfg = route.load_config(shipped, local)
+    assert cfg.smart.expand == ("Work",)
+    assert cfg.suggest.min_items == 5 and cfg.suggest.snooze_days == 7
+    assert cfg.setup.starter_folders == ("A",)
