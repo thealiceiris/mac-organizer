@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 import classify
@@ -13,7 +14,13 @@ MISC_TOPICS = "misc-topics.jsonl"
 
 
 def normalise(text: str) -> str:
-    """Lower case, drop digits and punctuation, collapse spaces, strip one trailing 's' per word."""
+    """Lower case, drop accents, digits and punctuation, collapse spaces, strip one trailing 's'.
+
+    Accents are decomposed (NFKD) and dropped first, so "Résumés" typed (NFC)
+    and "Résumés" as a macOS file name (often NFD) give the same key.
+    """
+    text = "".join(c for c in unicodedata.normalize("NFKD", text)
+                   if not unicodedata.combining(c))
     text = re.sub(r"[\d_]+|[^\w\s]", " ", text.lower())
     return " ".join(_singular(w) for w in text.split())
 
@@ -100,7 +107,8 @@ def clusters(state: Path, misc_dir: Path) -> dict[str, tuple[str, list[Path]]]:
             memory._rewrite(file, kept)
     by_key: dict[str, dict[str, list]] = {}
     for r in kept:
-        by_key.setdefault(r["key"], {}).setdefault(r["topic"], []).append(Path(r["path"]))
+        # the key is re-derived so rows written before a normalisation change still group
+        by_key.setdefault(normalise(r["topic"]) or r["key"], {}).setdefault(r["topic"], []).append(Path(r["path"]))
     out = {}
     for key, texts in by_key.items():
         name = max(texts, key=lambda t: (len(texts[t]), -list(texts).index(t)))

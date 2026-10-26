@@ -82,3 +82,26 @@ def test_put_unsure_stores_topic(tmp_path):
     c.put_unsure("/x/b.pdf", 1, 2.0, "h", 0)
     got = {r["path"]: r for r in memory._read(tmp_path / memory.VERDICTS)}
     assert got["/x/a.pdf"]["topic"] == "Taxes" and "topic" not in got["/x/b.pdf"]
+
+
+@pytest.mark.parametrize("word", ["Résumés", "Reçus"])
+def test_normalise_nfc_and_nfd_accents_agree(word):
+    """I5: a decomposed accent (as macOS file names often are) gives the same key."""
+    import unicodedata
+    nfc, nfd = unicodedata.normalize("NFC", word), unicodedata.normalize("NFD", word)
+    assert nfc != nfd
+    assert topics.normalise(nfc) == topics.normalise(nfd)
+    assert " " not in topics.normalise(nfd)
+
+
+def test_normalise_strips_accents():
+    assert topics.normalise("Résumés") == "resume"
+    assert topics.normalise("Reçus") == "recu"
+
+
+def test_near_duplicate_matches_an_nfd_named_folder(tmp_path):
+    import unicodedata
+    root = tmp_path / "Documents"
+    (root / unicodedata.normalize("NFD", "Résumés")).mkdir(parents=True)
+    found = topics.near_duplicate(unicodedata.normalize("NFC", "Résumé"), root, ())
+    assert found is not None and unicodedata.normalize("NFC", found) == "Résumés"
