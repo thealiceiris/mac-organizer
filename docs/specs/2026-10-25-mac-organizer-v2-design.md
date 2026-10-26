@@ -76,7 +76,7 @@ user already keeps for it, entirely on-device.
 | Installer disks | Mounted `.dmg` volumes are ejected automatically, safely (never forced, never real drives) |
 | Course codes | None configured. The AI handles course sorting. |
 | Allowed destinations | Any existing folder in `~/Documents`. None are excluded. |
-| Where the AI runs | On-device only, using the user's own models. Orb has no API, so llama.cpp runs the GGUF files directly. llama.cpp was installed with Homebrew (0.7.0) on 2026-10-25. |
+| Where the AI runs | On-device only, using the user's own models. Their desktop LLM app has no API, so llama.cpp runs the GGUF files directly. llama.cpp was installed with Homebrew (0.7.0) on 2026-10-25. |
 | Duplicates | Byte-identical copies → Trash. Different content still gets ` -2`. |
 | New rules | Audio/video, code/notebooks, keys/certs, `.ics`/`.svg` |
 | Zips | Stay zipped |
@@ -100,7 +100,7 @@ that places the item wins.
    screenshots, images, audio, video, installers, keys, `.ics`, `.svg`
    (table below).
 3. **Name rules (instant, no AI).** These are filename keyword → folder rules
-   in `rules.toml`, e.g. `ICS570` → `Academics/Cyber Security Essentials`, or
+   in `rules.toml`, e.g. `CS101` → `Academics/Intro to Computer Science`, or
    `CV|Resume|Cover Letter` → `Career`. They apply to documents, code, zips
    and folders.
 4. **Smart sort (local model).** It covers documents, spreadsheets, slides,
@@ -183,10 +183,9 @@ contents.
 
 - **Engine:** `llama-server` (Homebrew llama.cpp), bound to `127.0.0.1` only.
 - **Model:** set in config. The default is
-  `~/Library/Application Support/Orb/models/gguf/google_gemma-4-E4B-it-Q4_K_M.gguf`,
-  which is already on disk and is used in place rather than copied. The
-  user also has Qwen 3.5 9B and Gemma 4 12B in `~/Documents/models/gguf`,
-  and could switch to either in config.
+  a ~5 GB instruction-tuned GGUF chat model the user already has on disk,
+  used in place rather than copied. Larger local models can be swapped in
+  through config.
 - **Lifecycle:** the server starts only when a batch contains at least one
   smart-sort item, handles the whole batch, and is stopped when the batch
   ends. It is never left running.
@@ -196,8 +195,8 @@ contents.
   threshold (default 0.6, configurable), the result counts as unsure.
 - **Model missing or server fails:** the item takes the fallback route, the
   error goes to the log, and the summary notification says "AI sorting
-  unavailable". This matters because Orb could move or delete its model
-  during an update.
+  unavailable". This matters because the app that downloaded the model
+  could move or delete it during an update.
 
 ### Learning from corrections
 

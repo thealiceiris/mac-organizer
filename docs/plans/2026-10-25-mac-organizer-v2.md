@@ -37,7 +37,7 @@ Every external tool is called through an injectable `runner`, following the exis
 - Folder handling applies to **`~/Downloads` only**. `~/Desktop`, `~/Inbox` and screenshots stay files-only, except that `.app` bundles on the Desktop go to `~/Downloads/Installers`.
 - Smart-sort confidence threshold default is **0.6**. Below it the result counts as unsure.
 - The model is started only when a batch has at least one item needing a fresh verdict, and is stopped when the batch ends. It is never left running.
-- Default model path: `~/Library/Application Support/Orb/models/gguf/google_gemma-4-E4B-it-Q4_K_M.gguf`. It is written only into git-ignored `rules.local.toml`.
+- The model path is personal: it is written only into the git-ignored `rules.local.toml`.
 - Action log format is unchanged: `<ISO8601-UTC>  <VERB>  <src> -> <dst>`. New verbs: `DUPLICATE` (dst = the existing identical item), `TRASH`, `SMART` (a move decided by the model), `EJECT` (src = mount point, dst = image path).
 - Notification copy: start = `Files are being sorted…`. Summary = `<N> files sorted: <n> → <Folder>, …, <k> left in Inbox`, plus `, <d> duplicates to Trash` when d > 0, and `AI sorting unavailable` appended on server or model failure.
 - State lives in `~/.local/state/mac-organizer/` (`placements.jsonl`, `corrections.jsonl`, `verdicts.jsonl`, `disks.json`, `reports/`).
@@ -284,7 +284,7 @@ Every external tool is called through an injectable `runner`, following the exis
   - "unsure" is better than a wrong guess
   - each candidate is described by its name and example filenames
   - prior corrections are shown as "<file> belongs in <right>, not <wrong>"
-- [ ] **Step 4: Add `test_classify_live.py`.** It is skipped unless `MAC_ORGANIZER_LIVE=1`. It starts the real server on the default model and classifies a synthetic OpenPGP lab text against candidates built from the real `~/Documents`. It asserts the verdict is `Academics/Cyber Security Essentials` or unsure, never another folder. Run it once by hand: `MAC_ORGANIZER_LIVE=1 .venv/bin/python -m pytest tests/test_classify_live.py -q -s`. If the chat template fails, add `--jinja` to the server arguments here.
+- [ ] **Step 4: Add `test_classify_live.py`.** It is skipped unless `MAC_ORGANIZER_LIVE=1`. It starts the real server on the default model and classifies a synthetic OpenPGP lab text against candidates built from a throwaway Documents tree. It asserts the verdict is the security course folder or unsure, never another folder. Run it once by hand: `MAC_ORGANIZER_LIVE=1 .venv/bin/python -m pytest tests/test_classify_live.py -q -s`. If the chat template fails, add `--jinja` to the server arguments here.
 - [ ] **Step 5: Run the full suite.** It should pass, with the live test skipped.
 - [ ] **Step 6: Commit** `feat: local llama.cpp classifier with constrained output`
 

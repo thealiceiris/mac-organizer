@@ -6,6 +6,74 @@ small Python script triggered by `launchd`. No GUI, no Python dependencies
 (standard library only). Optionally, a local AI model reads documents and files
 them into the right folder in `~/Documents`, entirely on your Mac.
 
+## Quick start
+
+1. **Install the tools** (only Python is required; the rest enable smart sort,
+   PDF reading and clickable notifications):
+
+   ```bash
+   brew install python llama.cpp poppler terminal-notifier
+   ```
+
+2. **Get a model.** Any GGUF chat model works. A ~4–5 GB instruction-tuned
+   ("instruct" or "it") model at Q4_K_M quantisation from Hugging Face is a
+   good fit for a 16 GB Mac. Put it somewhere like `~/models/`.
+
+3. **Download mac-organizer:**
+
+   ```bash
+   git clone https://github.com/thealiceiris/mac-organizer.git ~/.mac-organizer
+   cd ~/.mac-organizer
+   ```
+
+4. **Messy Downloads? Preview before anything moves (optional).**
+
+   ```bash
+   python3 setup.py                     # folders + config, does NOT start sorting
+   # edit rules.local.toml: model_path = "~/models/<your-model>.gguf"
+   python3 route.py --backlog ~/Downloads        # writes a report, moves nothing
+   # open the report: delete a line, or put # in front of it, to veto it
+   python3 route.py --backlog --apply <report>   # does exactly the lines left
+   ```
+
+   Skip this step if you are happy for everything to be sorted straight away.
+
+5. **Turn it on:**
+
+   ```bash
+   ./install.sh
+   ```
+
+   It warns about missing tools, creates the folders, starts the background
+   jobs and shows a preview. If you skipped step 4, now set `model_path` in
+   `~/.mac-organizer/rules.local.toml`.
+
+6. **Use your Mac normally.** It is automatic from here:
+
+   | You… | mac-organizer… |
+   | --- | --- |
+   | download an image, audio, video or installer | moves it to `~/Media/…` or `~/Downloads/Installers` within about a minute |
+   | download a PDF, Word file, slides, code, a zip or a folder | has the local model read it and file it into the matching existing folder in `~/Documents`, or `~/Documents/Misc` if unsure |
+   | download the same file twice | sends the identical copy to the Trash |
+   | drop something on the Desktop | sorts it the same way |
+   | take a screenshot | files it under `~/Media/Screenshots/YYYY-MM/`, renamed by date |
+   | open a `.dmg` | ejects the disk 15 minutes later |
+   | drag a misfiled item to the right folder | learns from it for next time |
+
+   You get "Files are being sorted…" and then a clickable summary of what went
+   where; screenshots and installers are filed silently.
+
+**Good to know:** everything runs on your Mac (the model only listens on
+`127.0.0.1`); nothing is ever overwritten or permanently deleted (clashes get
+` -2`, discards go to the Trash); it never creates folders, so organise
+`~/Documents` your way and it follows; every move is logged in
+`~/.local/state/mac-organizer/actions.log`; `./uninstall.sh` turns it off and
+leaves your files where they are.
+
+**Trying it out?** Please report anything odd (a wrong folder, a noisy
+notification, a slow sweep) as a GitHub issue, and include the relevant lines
+from `actions.log`.
+
 ## Requirements
 
 - macOS
