@@ -20,8 +20,9 @@ NLP = "Academics/Natural Language Processing"
 class FakeFactory:
     """Stands in for ``LlamaServer``. ``answer(first_line_of_sample)`` -> folder or None."""
 
-    def __init__(self, answer=lambda name: None):
+    def __init__(self, answer=lambda name: None, topic=lambda name: None):
         self.answer = answer
+        self.topic = topic
         self.made = self.entered = self.exited = 0
         self.samples = []
 
@@ -40,7 +41,7 @@ class FakeFactory:
         self.samples.append(sample)
         folder = self.answer(sample.splitlines()[0])
         if folder is None:
-            return Verdict(None, 0.2, "not sure")
+            return Verdict(None, 0.2, "not sure", self.topic(sample.splitlines()[0]))
         return Verdict(folder, 0.9, f"looks like {folder}")
 
 
@@ -733,3 +734,176 @@ def test_replan_leaves_out_items_vetoed_earlier(home, make_file):
     assert "keepme.pdf" not in by_src(again)
     assert "new.pdf" in by_src(again)
     assert "kept because you vetoed it earlier" in again.read_text()
+
+
+# ---------------------------------------------------------------- folder suggestions (Task 6)
+
+TOPICS = by_name({"tax": "Taxes", "car": "Car", "recipe": "Recipes", "cv": "Careers"})
+
+
+def newfolders(report):
+    return [ln for ln in report.read_text().splitlines()
+            if ln.split("\t")[0] in ("NEWFOLDER", "#NEWFOLDER")]
+
+
+def accept(report, key, name):
+    text = report.read_text()
+    old = next(ln for ln in text.splitlines() if ln.startswith(f"#NEWFOLDER\t{key}\t"))
+    f = old[1:].split("\t")
+    f[2] = name
+    report.write_text(text.replace(old, "\t".join(f)))
+
+
+def test_plan_includes_loose_documents_files_only(home, make_file):
+    make_file(home / "Documents/loose.pdf", content="l")
+    make_file(home / "Documents/pic.png", content="p")
+    make_file(home / "Documents/Career/cv.pdf", content="c")
+    make_file(home / "Documents/Misc/m.pdf", content="m")
+    make_file(home / "Documents/Keys/k.pem", content="k")
+    make_file(home / "Documents/Inbox/i.pdf", content="i")
+    make_file(home / "Documents/folder/inner.pdf", content="f")
+    os.utime(home / "Documents/folder", (time.time() - 3600,) * 2)
+    report = do_plan(home, FakeFactory(by_name({"loose": NLP})), "Documents")
+
+    got = by_src(report)
+    assert set(got) == {"loose.pdf", "pic.png"}
+    assert got["loose.pdf"][2] == str(home / "Documents" / NLP / "loose.pdf")
+    assert got["pic.png"][2] == str(home / "Media/Images/pic.png")
+    do_apply(home, report)
+    assert (home / "Documents" / NLP / "loose.pdf").exists()
+    assert (home / "Media/Images/pic.png").exists()
+    assert not (home / "Documents/loose.pdf").exists()
+
+
+def test_plan_emits_commented_newfolder_for_cluster(home, make_file):
+    for n in ("tax1", "tax2", "tax3", "car1", "car2", "cv1", "cv2", "cv3", "other"):
+        make_file(home / f"Downloads/{n}.pdf", content=n)
+    report = do_plan(home, FakeFactory(topic=TOPICS), "Downloads")
+
+    nf = newfolders(report)
+    assert len(nf) == 1  # car: too few; Careers: near-duplicate of Career
+    f = nf[0].split("\t")
+    assert f[:4] == ["#NEWFOLDER", "tax", "Taxes", "3"]
+    assert "tax1.pdf" in f[4]
+    got = by_src(report)
+    for n in ("tax1", "tax2", "tax3"):
+        assert len(got[f"{n}.pdf"]) == 6 and got[f"{n}.pdf"][5] == "tax"
+        assert got[f"{n}.pdf"][2] == str(home / f"Documents/Misc/{n}.pdf")
+    assert got["car1.pdf"][5] == "" and got["other.pdf"][5] == ""
+    text = report.read_text()
+    assert "remove the # at the start" in text
+    assert "topic" in text
+
+
+def test_apply_without_uncommenting_creates_no_folder(home, make_file):
+    for n in ("tax1", "tax2", "tax3"):
+        make_file(home / f"Downloads/{n}.pdf", content=n)
+    before = sorted(p.name for p in (home / "Documents").iterdir())
+    report = do_plan(home, FakeFactory(topic=TOPICS), "Downloads")
+    do_apply(home, report)
+    after = sorted(p.name for p in (home / "Documents").iterdir())
+    assert after == sorted(before + ["Misc"])
+    assert sorted(p.name for p in (home / "Documents/Misc").iterdir()) == \
+        ["tax1.pdf", "tax2.pdf", "tax3.pdf"]
+    assert "NEWFOLDER" not in (home / "actions.log").read_text()
+
+
+def test_apply_accepted_newfolder_with_edited_name_redirects_moves(home, make_file, capsys):
+    for n in ("tax1", "tax2", "tax3"):
+        make_file(home / f"Downloads/{n}.pdf", content=n)
+    report = do_plan(home, FakeFactory(topic=TOPICS), "Downloads")
+    accept(report, "tax", "  Tax Returns ")
+    rewrite(report, lambda ln: "#" + ln if "tax3.pdf" in ln.split("\t")[1] else ln)
+
+    do_apply(home, report)
+
+    folder = home / "Documents/Tax Returns"
+    assert sorted(p.name for p in folder.iterdir()) == ["tax1.pdf", "tax2.pdf"]
+    assert (home / "Downloads/tax3.pdf").exists()
+    assert not (home / "Documents/Misc/tax1.pdf").exists()
+    log = (home / "actions.log").read_text()
+    assert "NEWFOLDER" in log and log.count("SUGGEST") == 2
+    assert "NEWFOLDER" in capsys.readouterr().out
+
+
+def test_misc_preview_only_newfolder_and_items_stay_unless_accepted(home, make_file, capsys):
+    misc = home / "Documents/Misc"
+    for n in ("recipe1", "recipe2", "recipe3"):
+        make_file(misc / f"{n}.pdf", content=n)
+    make_file(misc / "notopic.pdf", content="x")
+    make_file(misc / "ngrams.pdf", content="n")
+    make_file(misc / "pic.png", content="p")
+    report = do_plan(home, FakeFactory(by_name({"ngrams": NLP}), topic=TOPICS), "Documents/Misc")
+
+    got = by_src(report)
+    assert set(got) == {"recipe1.pdf", "recipe2.pdf", "recipe3.pdf"}
+    for f in got.values():
+        assert f[0] == "MOVE" and f[1] == f[2] and f[5] == "recipe"
+    nf = newfolders(report)
+    assert [x.split("\t")[:4] for x in nf] == [["#NEWFOLDER", "recipe", "Recipes", "3"]]
+
+    before = snapshot(home)
+    done = do_apply(home, report)
+    assert done == [] and snapshot(home) == before
+    assert "stays in Misc" in capsys.readouterr().out
+
+    accept(report, "recipe", "Recipes")
+    do_apply(home, report)
+    assert sorted(p.name for p in (home / "Documents/Recipes").iterdir()) == \
+        ["recipe1.pdf", "recipe2.pdf", "recipe3.pdf"]
+    assert sorted(p.name for p in misc.iterdir()) == ["ngrams.pdf", "notopic.pdf", "pic.png"]
+
+
+def test_hand_edited_newfolder_rejected_rest_applies(home, make_file, capsys):
+    """Review Focus 4."""
+    for n in ("tax1", "tax2", "tax3", "recipe1", "recipe2", "recipe3", "car1", "car2", "car3"):
+        make_file(home / f"Downloads/{n}.pdf", content=n)
+    b = make_file(home / "Downloads/b.png", content="b")
+    report = do_plan(home, FakeFactory(topic=TOPICS), "Downloads")
+    assert len(newfolders(report)) == 3
+    accept(report, "car", "Cars")
+    _append(report,
+            ["NEWFOLDER", "nope", "Nope", 3, "x"],      # unknown topic key
+            ["NEWFOLDER", "tax", "a/b", 3, "x"],        # path parts
+            ["NEWFOLDER", "recipe", "..", 3, "x"],      # path parts
+            ["NEWFOLDER", "tax", "Taxes", 3, "x"],      # duplicate key
+            ["MOVE", b, b, "r", "", "car"])             # placeholder outside Misc
+
+    do_apply(home, report)
+
+    out = capsys.readouterr().out
+    assert out.count("REJECTED NEWFOLDER") == 4
+    assert "REJECTED NEWFOLDER Nope" in out and "REJECTED NEWFOLDER a/b" in out
+    docs = sorted(p.name for p in (home / "Documents").iterdir())
+    assert "Cars" in docs and "Nope" not in docs and "Taxes" not in docs and "a" not in docs
+    assert sorted(p.name for p in (home / "Documents/Cars").iterdir()) == \
+        ["car1.pdf", "car2.pdf", "car3.pdf"]
+    assert sorted(p.name for p in (home / "Documents/Misc").iterdir()) == \
+        ["recipe1.pdf", "recipe2.pdf", "recipe3.pdf", "tax1.pdf", "tax2.pdf", "tax3.pdf"]
+    assert (home / "Media/Images/b.png").exists()  # its real line still applied
+    assert out.count("REJECTED") == 5
+
+
+def test_five_column_reports_still_parse(home, make_file):
+    make_file(home / "Downloads/a.png", content="a")
+    make_file(home / "Downloads/tax1.pdf", content="t")
+    report = do_plan(home, FakeFactory(topic=TOPICS), "Downloads")
+    rewrite(report, lambda ln: "\t".join(ln.split("\t")[:5]))
+    assert all(len(f) == 5 for f in lines(report))
+    planned_at, got, nfs = backlog.read_report(report)
+    assert nfs == [] and len(got) == 2 and all(ln.topic == "" for ln in got)
+    do_apply(home, report)
+    assert (home / "Media/Images/a.png").exists()
+    assert (home / "Documents/Misc/tax1.pdf").exists()
+
+
+def test_outage_plan_says_no_folder_suggestions(home, make_file):
+    for n in ("tax1", "tax2", "tax3"):
+        make_file(home / f"Downloads/{n}.pdf", content=n)
+
+    def broken(*a, **kw):
+        raise RuntimeError("no model")
+
+    report = do_plan(home, broken, "Downloads")
+    assert newfolders(report) == []
+    assert "no new folders could be suggested" in report.read_text()

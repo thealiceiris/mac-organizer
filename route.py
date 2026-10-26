@@ -706,6 +706,7 @@ class PlannedLine:
     rule: Rule
     reason: str = ""
     folder: str | None = None  # candidate name for a smart decision
+    topic: str | None = None  # the model's topic for an unsure item (unnormalised)
 
 
 def _rule_reason(rule: Rule) -> str:
@@ -778,7 +779,8 @@ def plan_item(path: Path, config: Config, smart: SmartRouter | None, now: float,
                           and action.dst.parent.resolve() == path.parent.resolve()):
         return None  # the fallback is where it already is
     pick = smart.pick(path)
-    return PlannedLine(action, rule, pick.reason if pick else "", pick.folder if pick else None)
+    return PlannedLine(action, rule, pick.reason if pick else "", pick.folder if pick else None,
+                       pick.topic if pick else None)
 
 
 def process_dir(
@@ -910,7 +912,9 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
     parser.add_argument("--log", type=Path, default=None)
     parser.add_argument("--lock", type=Path, default=None)
     parser.add_argument("--backlog", action="store_true",
-                        help="plan a one-off clean-up of PATHS into a report (moves nothing)")
+                        help="plan a one-off clean-up of PATHS into a report (moves nothing):"
+                             " ~/Downloads, ~/Documents/Inbox, ~/Documents (its loose files only),"
+                             " or ~/Documents/Misc (a preview of new folders to suggest)")
     parser.add_argument("--apply", type=Path, default=None, metavar="REPORT",
                         help="with --backlog: perform the lines left in REPORT")
     parser.add_argument("--suggestions", action="store_true",

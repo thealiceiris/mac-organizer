@@ -160,6 +160,20 @@ def _move_all(items, dest: Path, log) -> tuple[list[Path], str | None]:
     return moved, err
 
 
+def check_name(name, documents_root, expand) -> tuple[str, str | None, str | None]:
+    """(stripped name, error, similar existing folder) for a user-typed folder name.
+
+    Shared by ``accept`` and the backlog's NEWFOLDER lines so both refuse the same names.
+    """
+    name = (name or "").strip()
+    if ":" in name or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        return name, "The folder name cannot contain \":\" or control characters.", None
+    err = topics.valid_folder_name(name, documents_root)
+    if err:
+        return name, err, None
+    return name, None, topics.near_duplicate(name, documents_root, tuple(expand))
+
+
 def accept(state, key, name, misc_dir, documents_root, expand, log) -> AcceptResult:
     if key not in _load(state)["pending"]:
         return AcceptResult(error="no such suggestion")
@@ -167,13 +181,9 @@ def accept(state, key, name, misc_dir, documents_root, expand, log) -> AcceptRes
     if not items:
         _drop(state, key)
         return AcceptResult(error="those files are no longer in Misc")
-    name = (name or "").strip()
-    if ":" in name or any(ord(c) < 32 or ord(c) == 127 for c in name):
-        return AcceptResult(error="The folder name cannot contain \":\" or control characters.")
-    err = topics.valid_folder_name(name, documents_root)
+    name, err, similar = check_name(name, documents_root, expand)
     if err:
         return AcceptResult(error=err)
-    similar = topics.near_duplicate(name, documents_root, tuple(expand))
     if similar:
         return AcceptResult(similar=similar)
     folder = Path(documents_root) / name
