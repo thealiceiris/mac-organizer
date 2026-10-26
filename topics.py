@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import classify
@@ -70,11 +71,11 @@ def record(state: Path, item: Path, topic: str, now: float) -> None:
         return
     try:
         st = Path(item).stat()
-    except OSError:
-        return
-    memory._append(Path(state) / MISC_TOPICS, {
-        "path": str(item), "size": st.st_size, "mtime": st.st_mtime,
-        "topic": topic, "key": key, "at": now})
+        memory._append(Path(state) / MISC_TOPICS, {
+            "path": str(item), "size": st.st_size, "mtime": st.st_mtime,
+            "topic": topic, "key": key, "at": now})
+    except OSError as exc:  # a topic hint must never break routing
+        print(f"ERROR  recording topic for {item}: {exc!r}", file=sys.stderr)
 
 
 def clusters(state: Path, misc_dir: Path) -> dict[str, tuple[str, list[Path]]]:

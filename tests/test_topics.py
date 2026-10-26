@@ -73,3 +73,12 @@ def test_clusters_ignores_nested_and_missing_state(tmp_path):
     topics.record(tmp_path / "st", f, "Taxes", 1.0)
     assert topics.clusters(tmp_path / "st", misc) == {}
     assert topics.clusters(tmp_path / "none", misc) == {}
+
+
+def test_put_unsure_stores_topic(tmp_path):
+    import memory
+    c = memory.VerdictCache(tmp_path)
+    c.put_unsure("/x/a.pdf", 1, 2.0, "h", 0, topic="Taxes")
+    c.put_unsure("/x/b.pdf", 1, 2.0, "h", 0)
+    got = {r["path"]: r for r in memory._read(tmp_path / memory.VERDICTS)}
+    assert got["/x/a.pdf"]["topic"] == "Taxes" and "topic" not in got["/x/b.pdf"]

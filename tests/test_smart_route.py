@@ -999,3 +999,29 @@ def test_unsure_without_topic_records_nothing(home, make_file):
     make_file(home / "Downloads/mystery.pdf")
     run_main(home, FakeFactory(), FakeNotifier())
     assert rows(state(home) / "misc-topics.jsonl") == []
+
+
+def test_unwritable_topic_file_never_breaks_routing(home, make_file, monkeypatch):
+    import memory
+
+    def boom(path, row):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(memory, "_append", boom)
+    make_file(home / "Downloads/a.pdf", "a")
+    make_file(home / "Downloads/b.pdf", "b")
+    notifier = FakeNotifier()
+
+    assert run_main(home, FakeFactory(topic="Taxes"), notifier) == 0
+
+    assert (home / "Documents/Misc/a.pdf").exists() and (home / "Documents/Misc/b.pdf").exists()
+    assert [e.kind for e in notifier.batches[0].entries] == ["inbox", "inbox"]
+
+
+def test_read_only_router_records_no_topic(home, make_file):
+    make_file(home / "Downloads/mystery.pdf")
+    router = route.SmartRouter(settings(home), state(home), FakeFactory(topic="Taxes"),
+                               FakeNotifier(), read_only=True)
+    route_dir(home, router)
+    assert (home / "Documents/Misc/mystery.pdf").exists()
+    assert rows(state(home) / "misc-topics.jsonl") == []
