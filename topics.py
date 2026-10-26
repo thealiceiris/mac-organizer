@@ -5,8 +5,10 @@ import re
 from pathlib import Path
 
 import classify
+import memory
 
 MAX_NAME = 60
+MISC_TOPICS = "misc-topics.jsonl"
 
 
 def normalise(text: str) -> str:
@@ -59,3 +61,52 @@ def valid_folder_name(name: str, documents_root: Path) -> str | None:
     if taken:
         return f"A folder named \"{name}\" already exists."
     return None
+
+
+def record(state: Path, item: Path, topic: str, now: float) -> None:
+    """Remember the model's topic for an item that now sits in Misc."""
+    key = normalise(topic)
+    if not key:
+        return
+    try:
+        st = Path(item).stat()
+    except OSError:
+        return
+    memory._append(Path(state) / MISC_TOPICS, {
+        "path": str(item), "size": st.st_size, "mtime": st.st_mtime,
+        "topic": topic, "key": key, "at": now})
+
+
+def clusters(state: Path, misc_dir: Path) -> dict[str, tuple[str, list[Path]]]:
+    """Topic key -> (most common topic text, items still directly in ``misc_dir``).
+
+    Rows for items that are gone are pruned from the file.
+    """
+    file = Path(state) / MISC_TOPICS
+    with memory._locked(file):
+        rows = memory._read(file)
+        misc = Path(misc_dir)
+        kept, seen = [], set()
+        for r in rows:
+            p, key, topic = r.get("path"), r.get("key"), r.get("topic")
+            if not (isinstance(p, str) and isinstance(key, str) and key and isinstance(topic, str)):
+                continue
+            path = Path(p)
+            if path.parent != misc or not path.exists():
+                continue
+            kept.append(r)
+        if file.exists() and len(kept) != len(rows):
+            memory._rewrite(file, kept)
+    by_key: dict[str, dict[str, list]] = {}
+    for r in kept:
+        by_key.setdefault(r["key"], {}).setdefault(r["topic"], []).append(Path(r["path"]))
+    out = {}
+    for key, texts in by_key.items():
+        name = max(texts, key=lambda t: (len(texts[t]), -list(texts).index(t)))
+        items: list[Path] = []
+        for paths in texts.values():
+            for p in paths:
+                if p not in items:
+                    items.append(p)
+        out[key] = (name, items)
+    return out

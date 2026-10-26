@@ -23,6 +23,7 @@ import extract
 import fsops
 import memory
 import notify
+import topics
 from batch import Batch, NullNotifier
 from fsops import DestDirMissing, candidate_names, move_no_clobber  # noqa: F401  (re-exported)
 
@@ -455,6 +456,7 @@ class _Pick:
     folder: str | None  # candidate name; None for the rule's fallback
     reason: str
     summary: str
+    topic: str | None = None  # the model's topic for an unsure item
 
 
 class SmartRouter:
@@ -620,16 +622,18 @@ class SmartRouter:
         else:
             reason = verdict.reason
         if not rule.dest and verdict is not None and verdict.folder is None and not self.read_only:
-            cache.put_unsure(*key)  # a genuine "unsure": never an outage or a vanished folder
-        return self.fallback(path, rule, reason, summary)
+            cache.put_unsure(*key, topic=verdict.topic)  # a genuine "unsure": never an outage or a vanished folder
+        topic = verdict.topic if verdict is not None and verdict.folder is None else None
+        return self.fallback(path, rule, reason, summary, topic)
 
-    def fallback(self, path: Path, rule: Rule, reason: str, summary: str = "") -> Action | None:
+    def fallback(self, path: Path, rule: Rule, reason: str, summary: str = "",
+                 topic: str | None = None) -> Action | None:
         """The rule's fallback move, or leave the item in place. Never caches."""
         if rule.dest:
             dest_dir = resolve_dest(rule.dest, path.stat().st_mtime)
             if not within_home(dest_dir):
                 raise DestOutsideHome(dest_dir)
-            self._picks[path] = _Pick(None, reason, summary)
+            self._picks[path] = _Pick(None, reason, summary, topic)
             return Action(src=path, dst=dest_dir / path.name)
         self._picks.pop(path, None)
         self.batch.add(path, path, None, "stay", reason, smart=True)
@@ -652,6 +656,9 @@ class SmartRouter:
             self.batch.add(done.src, done.dst, pick.folder, "smart", pick.reason, smart=True)
         else:
             self.batch.add(done.src, done.dst, None, "inbox", pick.reason, smart=True)
+            misc = self.settings.documents_root / "Misc"
+            if pick.topic and not self.read_only and done.dst.parent == misc:
+                topics.record(self.state, done.dst, pick.topic, now)
 
     def close(self) -> None:
         ctx, self._ctx, self._server = self._ctx, None, None

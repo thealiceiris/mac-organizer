@@ -42,8 +42,9 @@ class FakeFactory:
     ``answer(sample, call_no)`` returns a folder name, None (unsure), or raises.
     """
 
-    def __init__(self, answer=lambda sample, n: None, enter_error=None):
+    def __init__(self, answer=lambda sample, n: None, enter_error=None, topic=None):
         self.answer = answer
+        self.topic = topic
         self.enter_error = enter_error
         self.made = 0
         self.entered = 0
@@ -69,7 +70,7 @@ class FakeFactory:
         self.samples.append(sample)
         folder = self.answer(sample, len(self.samples))
         if folder is None:
-            return Verdict(None, 0.2, "not sure")
+            return Verdict(None, 0.2, "not sure", self.topic)
         return Verdict(folder, 0.9, f"looks like {folder}")
 
 
@@ -956,3 +957,45 @@ def test_item_that_crashes_the_server_every_time_is_left_alone_after_three(home,
     assert factory.entered == 3  # the 4th sweep does not load the model for it
     assert notifiers[3].calls == []
     assert bad.exists()
+
+
+# ---------------------------------------------------------------- topics
+
+
+def test_unsure_with_topic_into_misc_records_topic(home, make_file):
+    make_file(home / "Downloads/mystery.pdf")
+    factory = FakeFactory(topic="Taxes")
+
+    run_main(home, factory, FakeNotifier())
+
+    dst = home / "Documents/Misc/mystery.pdf"
+    [row] = rows(state(home) / "misc-topics.jsonl")
+    assert row["path"] == str(dst) and row["key"] == "tax" and row["topic"] == "Taxes"
+
+
+def test_topic_recorded_at_final_path_after_rename(home, make_file):
+    make_file(home / "Documents/Misc/mystery.pdf", "old")
+    make_file(home / "Downloads/mystery.pdf", "new")
+
+    run_main(home, FakeFactory(topic="Taxes"), FakeNotifier())
+
+    [row] = rows(state(home) / "misc-topics.jsonl")
+    assert row["path"] == str(home / "Documents/Misc/mystery -2.pdf")
+
+
+def test_outage_and_type_rule_moves_record_no_topic(home, make_file):
+    make_file(home / "Downloads/a.pdf")
+    # model disabled / missing: an outage, not a genuine unsure
+    run_main(home, FakeFactory(enter_error=ServerUnavailable("no")), FakeNotifier())
+    # a plain type rule move
+    make_file(home / "Downloads/shot.dmg")
+    run_main(home, FakeFactory(topic="Taxes"), FakeNotifier(), home / "Downloads/shot.dmg")
+
+    assert (home / "Documents/Misc/a.pdf").exists()
+    assert rows(state(home) / "misc-topics.jsonl") == []
+
+
+def test_unsure_without_topic_records_nothing(home, make_file):
+    make_file(home / "Downloads/mystery.pdf")
+    run_main(home, FakeFactory(), FakeNotifier())
+    assert rows(state(home) / "misc-topics.jsonl") == []

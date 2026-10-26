@@ -21,6 +21,7 @@ REPO_FILES = [
     "dedupe.py",
     "classify.py",
     "memory.py",
+    "topics.py",
     "batch.py",
     "backlog.py",
     "notify.py",

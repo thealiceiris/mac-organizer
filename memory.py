@@ -216,11 +216,14 @@ class VerdictCache:
         r = self.rows.get(str(path))
         return r is not None and r["key"] == self._key(path, size, mtime, cands_hash, corrections_count)
 
-    def put_unsure(self, path, size, mtime, cands_hash, corrections_count) -> None:
+    def put_unsure(self, path, size, mtime, cands_hash, corrections_count,
+                   topic: str | None = None) -> None:
         key = self._key(path, size, mtime, cands_hash, corrections_count)
         if self.get(path, size, mtime, cands_hash, corrections_count):
             return
         self.rows[str(path)] = {"key": key, "path": str(path), "verdict": "unsure", "at": time.time()}
+        if topic:
+            self.rows[str(path)]["topic"] = topic
         self._save()
 
 
