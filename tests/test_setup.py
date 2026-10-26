@@ -176,3 +176,73 @@ def test_setup_no_longer_creates_documents_inbox(monkeypatch, tmp_path):
     setup.make_dirs()
     assert not (tmp_path / "Documents/Inbox").exists()
     assert (tmp_path / "Documents/Misc").is_dir()
+
+
+def test_documents_is_empty_ignores_own_folders(tmp_path):
+    docs = tmp_path / "Documents"
+    assert setup.documents_is_empty(docs)  # missing folder counts as empty
+    for name in ("Misc", "Keys", "Inbox", ".hidden"):
+        (docs / name).mkdir(parents=True, exist_ok=True)
+    (docs / "loose.txt").write_text("x")
+    assert setup.documents_is_empty(docs)
+    (docs / "Taxes").mkdir()
+    assert not setup.documents_is_empty(docs)
+
+
+def test_starter_folders_only_on_yes_and_asked_once(tmp_path):
+    docs, state = tmp_path / "Documents", tmp_path / "state"
+    names = ("Work", "School")
+    prompts = []
+
+    def no(prompt):
+        prompts.append(prompt)
+        return "maybe"
+
+    assert setup.offer_starter_folders(names, docs, state, ask=no, interactive=True) == []
+    assert not (docs / "Work").exists()
+    assert prompts == [
+        "Your Documents folder is empty. Create starter folders Work, School? [y/N] "
+    ]
+    # asked once: a later yes is never even requested
+    assert setup.offer_starter_folders(names, docs, state, ask=lambda p: "y", interactive=True) == []
+    assert not (docs / "Work").exists()
+
+    state2 = tmp_path / "state2"
+    made = setup.offer_starter_folders(names, docs, state2, ask=lambda p: " YES ", interactive=True)
+    assert made == [docs / "Work", docs / "School"]
+    assert (docs / "School").is_dir()
+
+
+def test_starter_eof_is_no_and_nonempty_documents_not_asked(tmp_path):
+    docs = tmp_path / "Documents"
+
+    def eof(prompt):
+        raise EOFError
+
+    assert setup.offer_starter_folders(("Work",), docs, tmp_path / "s", ask=eof, interactive=True) == []
+    assert not (docs / "Work").exists()
+    (docs / "Existing").mkdir(parents=True)
+
+    def boom(prompt):
+        raise AssertionError("must not ask")
+
+    assert setup.offer_starter_folders(("Work",), docs, tmp_path / "s2", ask=boom, interactive=True) == []
+
+
+def test_starter_not_asked_when_not_interactive(tmp_path):
+    docs, state = tmp_path / "Documents", tmp_path / "state"
+
+    def boom(prompt):
+        raise AssertionError("must not ask")
+
+    assert setup.offer_starter_folders(("Work",), docs, state, ask=boom, interactive=False) == []
+    assert not (docs / "Work").exists()
+    assert not (state / "starter-asked").exists()
+
+
+def test_starter_names_come_from_config(tmp_path):
+    rules = tmp_path / "rules.toml"
+    rules.write_text('[setup]\nstarter_folders = ["A", "B"]\n')
+    assert setup.starter_names(rules, tmp_path / "rules.local.toml") == ("A", "B")
+    import route
+    assert setup.starter_names(tmp_path / "missing.toml", None) == route.DEFAULT_STARTER_FOLDERS

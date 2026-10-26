@@ -41,6 +41,33 @@ if [ -n "$MISSING" ]; then
   echo "  brew install${MISSING}"
 fi
 
+# On a busy Mac, ask before the sorter starts moving things on its own.
+# MAC_ORGANIZER_FORCE_TTY=1 stands in for a terminal in tests; ASSUME_YES skips the question.
+LOAD_AGENTS=1
+if { [ -t 0 ] || [ -n "${MAC_ORGANIZER_FORCE_TTY:-}" ]; } && [ -z "${MAC_ORGANIZER_ASSUME_YES:-}" ]; then
+  DL_COUNT=0
+  if [ -d "$HOME/Downloads" ]; then
+    DL_COUNT=$(find "$HOME/Downloads" -mindepth 1 -maxdepth 1 ! -name '.*' 2>/dev/null | wc -l | tr -d ' ')
+  fi
+  DOC_COUNT=0
+  if [ -d "$HOME/Documents" ]; then
+    DOC_COUNT=$(find "$HOME/Documents" -mindepth 1 -maxdepth 1 -type f ! -name '.*' 2>/dev/null | wc -l | tr -d ' ')
+  fi
+  if [ "$DL_COUNT" -gt 50 ] || [ "$DOC_COUNT" -gt 20 ]; then
+    echo "You have $DL_COUNT items in Downloads and $DOC_COUNT loose files in Documents."
+    echo "Recommended: preview first, nothing moves until you approve:"
+    echo "  python3 setup.py && python3 route.py --backlog ~/Downloads ~/Documents"
+    printf 'Load the background sorter now? [y/N] '
+    ANSWER=""
+    read -r ANSWER || ANSWER=""
+    echo
+    case "$(printf '%s' "$ANSWER" | tr '[:upper:]' '[:lower:]')" in
+      y|yes) ;;
+      *) LOAD_AGENTS=0 ;;
+    esac
+  fi
+fi
+
 # Unload anything from a previous install before setup.py rewrites the set, so
 # re-running is safe and agents that are no longer generated do not linger.
 for plist in "$AGENTS_DIR"/com.mac-organizer.*.plist; do
@@ -49,6 +76,14 @@ for plist in "$AGENTS_DIR"/com.mac-organizer.*.plist; do
 done
 
 "$PYTHON" "$REPO/setup.py"
+
+if [ "$LOAD_AGENTS" = 0 ]; then
+  echo
+  echo "The background sorter is not loaded. Preview with:"
+  echo "  python3 route.py --backlog ~/Downloads ~/Documents"
+  echo "When you are ready, run ./install.sh to load it."
+  exit 0
+fi
 
 for plist in "$AGENTS_DIR"/com.mac-organizer.*.plist; do
   [ -e "$plist" ] || continue

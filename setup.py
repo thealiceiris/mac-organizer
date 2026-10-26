@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import plist
+import route
 
 REPO = Path(__file__).resolve().parent
 LABEL_PREFIX = "com.mac-organizer"
@@ -159,6 +160,63 @@ def copy_vault_template(src: Path, dest: Path) -> None:
             shutil.copy2(item, target)
 
 
+OWN_DOCUMENT_FOLDERS = {"Misc", "Keys", "Inbox"}
+STARTER_STAMP = "starter-asked"
+
+
+def documents_is_empty(documents_root: Path) -> bool:
+    """True when ~/Documents has no visible folders besides our own."""
+    try:
+        children = list(Path(documents_root).iterdir())
+    except OSError:
+        return True
+    return not any(
+        c.is_dir() and not c.name.startswith(".") and c.name not in OWN_DOCUMENT_FOLDERS
+        for c in children
+    )
+
+
+def starter_names(rules_path: Path, local_path: Path | None) -> tuple[str, ...]:
+    """Starter folder names from the rules files; the built-in default if absent."""
+    try:
+        return route.load_config(rules_path, local_path).setup.starter_folders
+    except (OSError, ValueError):
+        return route.DEFAULT_STARTER_FOLDERS
+
+
+def offer_starter_folders(
+    names, documents_root: Path, state: Path, ask=input, interactive: bool = False
+) -> list[Path]:
+    """Ask once whether to create starter folders; only y/yes creates them."""
+    names = [n for n in names if n]
+    if not interactive or not names or not documents_is_empty(documents_root):
+        return []
+    stamp = Path(state) / STARTER_STAMP
+    if stamp.exists():
+        return []
+    try:
+        answer = ask(
+            f"Your Documents folder is empty. Create starter folders {', '.join(names)}? [y/N] "
+        )
+    except EOFError:
+        answer = ""
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text("1\n")
+    except OSError:
+        pass
+    if answer.strip().lower() not in ("y", "yes"):
+        return []
+    made: list[Path] = []
+    for name in names:
+        if "/" in name or name.startswith("."):
+            continue
+        target = Path(documents_root) / name
+        target.mkdir(parents=True, exist_ok=True)
+        made.append(target)
+    return made
+
+
 def main() -> None:
     python = sys.executable
     route_py = REPO / "route.py"
@@ -172,6 +230,11 @@ def main() -> None:
     wrote_local = write_local_rules(
         REPO / "rules.local.default.toml", REPO / "rules.local.toml"
     )
+    names = starter_names(REPO / "rules.toml", REPO / "rules.local.toml")
+    starters = offer_starter_folders(
+        names, Path("~/Documents").expanduser(), state_dir(),
+        interactive=sys.stdin.isatty(),
+    )
     agents = install_agents(python, route_py, screenshot_dir)
     copy_vault_template(REPO / "vault-template", Path("~/Notes").expanduser())
 
@@ -182,6 +245,8 @@ def main() -> None:
     print(f"rules.local.toml: {'created' if wrote_local else 'left as-is (already exists)'}")
     for path in agents:
         print(f"agent: {path}")
+    for path in starters:
+        print(f"starter folder: {path}")
     print(f"vault: {Path('~/Notes').expanduser()}")
 
 

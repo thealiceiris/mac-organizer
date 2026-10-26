@@ -58,3 +58,17 @@ def test_live_model_test_takes_the_model_from_the_environment():
     live = (README.parent / "tests" / "test_classify_live.py").read_text()
     assert "MAC_ORGANIZER_MODEL" in live
     assert "Orb" not in live and "gemma" not in live.lower()
+
+
+def test_readme_documents_suggestions_and_expand():
+    text = README.read_text()
+    section = _section(text, "Setting up your folders")
+    for needle in [
+        "starter", "python3 setup.py", "python3 route.py --backlog ~/Downloads ~/Documents",
+        "NEWFOLDER", "#", "folder name", "~/Documents/Misc", "Click to review",
+        "--suggestions", "--accept-suggestion", "--decline-suggestion",
+        "terminal-notifier", "expand", "rules.local.toml", "[y/N]",
+    ]:
+        assert needle in section, needle
+    assert "python3 route.py --backlog ~/Downloads ~/Documents" in text.split("## Requirements")[0]
+    assert "never creates folders" not in text

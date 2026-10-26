@@ -236,3 +236,76 @@ def test_install_warns_about_missing_tools_before_setup(env):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.index("brew install") < result.stdout.index("screenshot dir:")
+
+
+def _busy_home(env):
+    downloads = env["home"] / "Downloads"
+    downloads.mkdir()
+    for i in range(51):
+        (downloads / f"f{i}.bin").write_text("x")
+
+
+def _run_input(script, env, text):
+    return subprocess.run(
+        ["bash", str(script)], env=env["vars"], input=text,
+        capture_output=True, text=True,
+    )
+
+
+def test_install_busy_mac_no_skips_loading_agents(env):
+    env["vars"]["LAUNCHCTL"] = str(_launchctl_stub(env["bin_dir"]))
+    env["vars"]["MAC_ORGANIZER_FORCE_TTY"] = "1"
+    _busy_home(env)
+
+    result = _run_input(env["repo"] / "install.sh", env, "n\n")
+    assert result.returncode == 0, result.stderr
+    assert "51 items in Downloads" in result.stdout
+    assert "Load the background sorter now? [y/N]" in result.stdout
+    assert "./install.sh" in result.stdout
+    log = env["log"].read_text()
+    assert "bootstrap" not in log and "load" not in log
+    assert (env["repo"] / "rules.toml").exists()
+    assert (env["home"] / "Documents" / "Misc").is_dir()
+
+
+def test_install_busy_mac_no_unloads_loaded_agents(env):
+    env["vars"]["LAUNCHCTL"] = str(_launchctl_stub(env["bin_dir"]))
+    env["vars"]["MAC_ORGANIZER_FORCE_TTY"] = "1"
+    _busy_home(env)
+    agents = env["home"] / "Library/LaunchAgents"
+    agents.mkdir(parents=True)
+    (agents / "com.mac-organizer.sweep.plist").write_text("x")
+
+    result = _run_input(env["repo"] / "install.sh", env, "\n")  # empty answer is No
+    assert result.returncode == 0, result.stderr
+    log = env["log"].read_text()
+    assert "bootout" in log and "bootstrap" not in log
+
+
+def test_install_busy_mac_yes_loads(env):
+    env["vars"]["LAUNCHCTL"] = str(_launchctl_stub(env["bin_dir"]))
+    env["vars"]["MAC_ORGANIZER_FORCE_TTY"] = "1"
+    _busy_home(env)
+    result = _run_input(env["repo"] / "install.sh", env, "Yes\n")
+    assert result.returncode == 0, result.stderr
+    assert "bootstrap" in env["log"].read_text()
+
+
+def test_install_assume_yes_loads(env):
+    env["vars"]["LAUNCHCTL"] = str(_launchctl_stub(env["bin_dir"]))
+    env["vars"]["MAC_ORGANIZER_FORCE_TTY"] = "1"
+    env["vars"]["MAC_ORGANIZER_ASSUME_YES"] = "1"
+    _busy_home(env)
+    result = _run_input(env["repo"] / "install.sh", env, "")
+    assert result.returncode == 0, result.stderr
+    assert "Load the background sorter" not in result.stdout
+    assert "bootstrap" in env["log"].read_text()
+
+
+def test_install_quiet_mac_is_not_asked(env):
+    env["vars"]["LAUNCHCTL"] = str(_launchctl_stub(env["bin_dir"]))
+    env["vars"]["MAC_ORGANIZER_FORCE_TTY"] = "1"
+    result = _run_input(env["repo"] / "install.sh", env, "")
+    assert result.returncode == 0, result.stderr
+    assert "Load the background sorter" not in result.stdout
+    assert "bootstrap" in env["log"].read_text()

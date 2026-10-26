@@ -26,17 +26,21 @@ them into the right folder in `~/Documents`, entirely on your Mac.
    cd ~/.mac-organizer
    ```
 
-4. **Messy Downloads? Preview before anything moves (optional).**
+4. **Messy Downloads or Documents? Preview before anything moves (optional).**
 
    ```bash
    python3 setup.py                     # folders + config, does NOT start sorting
    # edit rules.local.toml: model_path = "~/models/<your-model>.gguf"
-   python3 route.py --backlog ~/Downloads        # writes a report, moves nothing
+   python3 route.py --backlog ~/Downloads ~/Documents   # writes a report, moves nothing
    # open the report: delete a line, or put # in front of it, to veto it
    python3 route.py --backlog --apply <report>   # does exactly the lines left
    ```
 
    Skip this step if you are happy for everything to be sorted straight away.
+   Items already in `~/Documents/Misc` can be previewed the same way with
+   `python3 route.py --backlog ~/Documents/Misc`. If your Mac is busy,
+   `./install.sh` notices and asks before it loads the background sorter (see
+   "Setting up your folders").
 
 5. **Turn it on:**
 
@@ -65,8 +69,9 @@ them into the right folder in `~/Documents`, entirely on your Mac.
 
 **Good to know:** everything runs on your Mac (the model only listens on
 `127.0.0.1`); nothing is ever overwritten or permanently deleted (clashes get
-` -2`, discards go to the Trash); it never creates folders, so organise
-`~/Documents` your way and it follows; every move is logged in
+` -2`, discards go to the Trash); it only creates a folder when you say yes
+(see "Setting up your folders"), so organise `~/Documents` your way and it
+follows; every move is logged in
 `~/.local/state/mac-organizer/actions.log`; `./uninstall.sh` turns it off and
 leaves your files where they are.
 
@@ -118,6 +123,83 @@ model"); until you do, smart sort is off and documents go to `~/Documents/Misc`.
 
 Then open Obsidian and "Open folder as vault" → `~/Notes`.
 
+## Setting up your folders
+
+mac-organizer suggests folders and asks. The answer is always no until you say
+yes: nothing is created and nothing is started without your approval.
+
+**New to this (an empty Documents folder).** When `./install.sh` (or
+`python3 setup.py`) runs in a terminal and `~/Documents` has no folders of
+your own, it asks once:
+
+```
+Your Documents folder is empty. Create starter folders Work, School, Finance, Health, Personal, Travel? [y/N]
+```
+
+Only `y` or `yes` creates them; anything else (or just Enter) does not, and it
+is not asked again. Change the names under `[setup] starter_folders` in
+`rules.local.toml`.
+
+**Already have a lot of files.** If `~/Downloads` has more than 50 items or
+`~/Documents` more than 20 loose files, `./install.sh` tells you and asks
+`Load the background sorter now? [y/N]`. Answering no sets everything up but
+leaves the sorter off; run `./install.sh` again when you are ready. Preview
+first, then approve:
+
+```bash
+python3 setup.py
+python3 route.py --backlog ~/Downloads ~/Documents
+```
+
+Open the report. Besides the usual lines, topics the model keeps seeing may
+appear as commented-out suggestions:
+
+```
+#NEWFOLDER	<topic>	Taxes	7	return.pdf, w2.pdf
+```
+
+Remove the `#` before a `NEWFOLDER` line to accept it; edit only the folder name
+column (the third one). Leave the `#` and it is skipped. Then run
+`python3 route.py --backlog --apply <report>`. A name that is empty, contains
+`/`, starts with `.`, already exists or is nearly the same as an existing
+folder creates nothing (a near-duplicate offers the existing folder instead).
+Loose files in `~/Documents` are included in the preview; the live sorter never
+touches `~/Documents`. To preview what is already in `~/Documents/Misc`:
+
+```bash
+python3 route.py --backlog ~/Documents/Misc
+```
+
+**Day to day.** When at least three files in `~/Documents/Misc` look like they
+belong together you get one notification at most every 24 hours:
+
+> 7 files in Misc look like Taxes. Click to review.
+
+Clicking opens a dialog, `Create a "Taxes" folder in Documents?`, with the
+buttons `Not now` (asks again after 7 days), `Never suggest this` and
+`Create & move` (the default). The folder is created, and the files still in
+Misc are moved into it, only on `Create & move`. An unanswered suggestion
+expires after 7 days and counts as `Not now`. Without `terminal-notifier` there
+is no notification; list and answer suggestions from the terminal:
+
+```bash
+python3 route.py --suggestions
+python3 route.py --accept-suggestion <topic>
+python3 route.py --decline-suggestion <topic>          # not now
+python3 route.py --decline-suggestion <topic> --never  # never suggest this
+```
+
+**Subfolders as candidates.** The model can also file into the subfolders of
+folders you name in `expand`. Set it in `rules.local.toml`:
+
+```toml
+[smart_sort]
+expand = ["School", "Work"]
+```
+
+The default is `["Academics"]`. Each listed top-level folder contributes its
+first-level subfolders.
+
 ## What gets moved where
 
 Routing is defined in `rules.toml` (generated from `rules.default.toml`).
@@ -155,7 +237,8 @@ For documents, archives, code and folders, a local model reads a sample of the
 content (for an archive, the names inside it; for a folder, up to 200 of its
 paths and a few documents near its top) and picks the best existing folder. The candidates are the top-level
 folders of `~/Documents` (except `Inbox`, `Keys` and `Misc`) plus the folders one level
-inside `~/Documents/Academics` if you have one. **It never creates folders**:
+inside `~/Documents/Academics` if you have one. **It never creates folders by itself** (it can only
+*suggest* them, see "Setting up your folders"):
 if the model is unsure (confidence below the `threshold`, default 0.6), or no
 folder fits, the item goes to `~/Documents/Misc` (the rule's `dest`).
 
