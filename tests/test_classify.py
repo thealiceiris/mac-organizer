@@ -596,3 +596,42 @@ def test_candidates_default_expand_is_academics(tmp_path):
     names = [c.name for c in classify.candidates(root)]
     assert "Academics/Natural Language Processing" in names
     assert names == [c.name for c in classify.candidates(root, expand=("Academics",))]
+
+
+# ---------------------------------------------------------------- topic
+
+
+def test_parse_verdict_topic_only_when_unsure(tmp_path):
+    cands = classify.candidates(_docs(tmp_path))
+    ok = classify.parse_verdict(_chat_body(
+        {"folder": "Career", "confidence": 0.9, "reason": "r", "topic": "taxes"}), cands, 0.6)
+    assert ok.folder == "Career" and ok.topic is None
+    un = classify.parse_verdict(_chat_body(
+        {"folder": "unsure", "confidence": 0.9, "reason": "r", "topic": " taxes "}), cands, 0.6)
+    assert un.folder is None and un.topic == "Taxes"
+    low = classify.parse_verdict(_chat_body(
+        {"folder": "Career", "confidence": 0.2, "reason": "r", "topic": "car insurance"}), cands, 0.6)
+    assert low.folder is None and low.topic == "Car Insurance"
+    unknown = classify.parse_verdict(_chat_body(
+        {"folder": "Nope", "confidence": 0.9, "reason": "r", "topic": "recipes"}), cands, 0.6)
+    assert unknown.topic == "Recipes"
+    for bad in ("", "   ", 5, None):
+        v = classify.parse_verdict(_chat_body(
+            {"folder": "unsure", "confidence": 0.9, "reason": "r", "topic": bad}), cands, 0.6)
+        assert v.topic is None
+    long = classify.parse_verdict(_chat_body(
+        {"folder": "unsure", "confidence": 0.9, "reason": "r", "topic": "x" * 80}), cands, 0.6)
+    assert len(long.topic) == 40
+    mal = classify.parse_verdict(_chat_body(
+        {"folder": "unsure", "confidence": "high", "reason": "r", "topic": "Taxes"}), cands, 0.6)
+    assert mal.topic is None
+    assert classify.parse_verdict({}, cands, 0.6).topic is None
+    assert classify.Verdict(None, 0.0, "r").topic is None
+
+
+def test_schema_topic_optional(tmp_path):
+    cands = classify.candidates(_docs(tmp_path))
+    schema = classify.build_request("x", cands, [])["response_format"]["json_schema"]["schema"]
+    assert "topic" in schema["properties"] and "topic" not in schema["required"]
+    assert schema["properties"]["topic"]["maxLength"] == 40
+    assert schema["additionalProperties"] is False

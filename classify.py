@@ -23,6 +23,7 @@ EXCLUDED_TOP = {"Inbox", "Keys", "Misc"}
 MAX_EXAMPLES = 5
 MAX_SAMPLE_CHARS = 12_000
 MAX_REASON = 200
+MAX_TOPIC = 40
 HOST = "127.0.0.1"
 CONTEXT = 8192
 HEALTH_TIMEOUT = 120.0
@@ -54,6 +55,7 @@ class Verdict:
     folder: str | None
     confidence: float
     reason: str
+    topic: str | None = None
 
 
 # ---------------------------------------------------------------- candidates
@@ -122,7 +124,9 @@ SYSTEM_PROMPT = (
     "belongs in one folder. Each candidate folder is described by its name and up to five "
     "example filenames already in it. "
     "Reply with JSON: folder (a name from the list, or \"unsure\"), confidence (0 to 1), "
-    "and reason (one short sentence)."
+    "and reason (one short sentence). "
+    "If you answer unsure, also give topic: a 1-3 word name for what the item is about, "
+    "suitable as a folder name."
 )
 
 
@@ -133,6 +137,7 @@ def _schema(cands) -> dict:
             "folder": {"type": "string", "enum": [c.name for c in cands] + ["unsure"]},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "reason": {"type": "string", "maxLength": MAX_REASON},
+            "topic": {"type": "string", "maxLength": MAX_TOPIC},
         },
         "required": ["folder", "confidence", "reason"],
         "additionalProperties": False,
@@ -161,8 +166,17 @@ def build_request(sample: str, cands, examples: list[dict]) -> dict:
     }
 
 
-def _unsure(reason: str, confidence: float = 0.0) -> Verdict:
-    return Verdict(None, confidence, reason[:MAX_REASON])
+def _unsure(reason: str, confidence: float = 0.0, topic: str | None = None) -> Verdict:
+    return Verdict(None, confidence, reason[:MAX_REASON], topic)
+
+
+def _clean_topic(value) -> str | None:
+    """Stripped, Title Case, at most MAX_TOPIC characters; None unless a non-empty string."""
+    if not isinstance(value, str):
+        return None
+    words = value.split()
+    text = " ".join(w[:1].upper() + w[1:].lower() for w in words)[:MAX_TOPIC].strip()
+    return text or None
 
 
 def parse_verdict(body: dict, cands, threshold: float) -> Verdict:
@@ -180,10 +194,11 @@ def parse_verdict(body: dict, cands, threshold: float) -> Verdict:
     conf = float(conf)
     reason = reason[:MAX_REASON] if isinstance(reason, str) else ""
     names = {c.name for c in cands}
+    topic = _clean_topic(data.get("topic"))
     if not isinstance(folder, str) or folder not in names:
-        return _unsure(reason or "unsure", conf)
+        return _unsure(reason or "unsure", conf, topic)
     if conf < threshold:
-        return Verdict(None, conf, reason)
+        return Verdict(None, conf, reason, topic)
     return Verdict(folder, conf, reason)
 
 
