@@ -237,7 +237,7 @@ For documents, archives, code and folders, a local model reads a sample of the
 content (for an archive, the names inside it; for a folder, up to 200 of its
 paths and a few documents near its top) and picks the best existing folder. The candidates are the top-level
 folders of `~/Documents` (except `Inbox`, `Keys` and `Misc`) plus the folders one level
-inside `~/Documents/Academics` if you have one. **It never creates folders by itself** (it can only
+inside `~/Documents/Academics` if you have one. **It does not create folders on its own** (it can only
 *suggest* them, see "Setting up your folders"):
 if the model is unsure (confidence below the `threshold`, default 0.6), or no
 folder fits, the item goes to `~/Documents/Misc` (the rule's `dest`).
