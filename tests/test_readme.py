@@ -28,6 +28,7 @@ def test_readme_documents_v2():
 def test_no_personal_paths_in_published_files():
     root = README.parent
     files = [README, ADVANCED, root / "rules.default.toml", root / "rules.local.default.toml"]
+    files += sorted((root / "docs" / "adr").glob("*.md"))
     for f in files:
         text = f.read_text()
         assert "/Users/" not in text, f.name
