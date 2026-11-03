@@ -19,6 +19,10 @@ UNAVAILABLE_TEXT = "AI sorting unavailable — files will wait in Misc"
 REPORT_KEEP_DAYS = 30
 SUGGEST_GROUP = "mac-organizer-suggest"
 FALLBACK_PATHS = ("/opt/homebrew/bin/terminal-notifier", "/usr/local/bin/terminal-notifier")
+# setup.py's copy of terminal-notifier.app with a folder icon, in the state dir:
+# macOS takes a notification's icon from the app that sends it.
+NOTIFIER_APP = "mac-organizer.app"
+NOTIFIER_EXE = "Contents/MacOS/terminal-notifier"
 
 
 def _label(folder: str | None) -> str:
@@ -138,6 +142,9 @@ class Notifier:
                 pass
 
     def _terminal_notifier(self) -> str | None:
+        own = self.state / NOTIFIER_APP / NOTIFIER_EXE
+        if os.access(own, os.X_OK):
+            return str(own)
         found = self.which("terminal-notifier")
         if found:
             return found

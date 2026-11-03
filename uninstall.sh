@@ -12,5 +12,7 @@ for plist in "$AGENTS_DIR"/com.mac-organizer.*.plist; do
 done
 
 rm -rf "$HOME/Applications/Folder Suggestions.app"
+# the folder-icon copy of terminal-notifier (setup.py install_notifier)
+rm -rf "$HOME/.local/state/mac-organizer/mac-organizer.app"
 
 echo "Removed mac-organizer launchd agents and the Folder Suggestions app. Files, rules.toml, and logs are untouched."

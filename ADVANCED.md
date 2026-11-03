@@ -245,6 +245,14 @@ of what went where; without it, mac-organizer falls back to macOS's built-in
 `osascript display notification` (not clickable). Batches handled purely by
 rules are silent.
 
+Notifications show a folder icon. macOS takes a notification's icon from the
+app that sends it, so `./install.sh` makes a copy of `terminal-notifier.app`
+with the system folder icon and its own id (`com.mac-organizer.notifier`) at
+`~/.local/state/mac-organizer/mac-organizer.app`, ad-hoc signed. It appears as
+**mac-organizer** in System Settings → Notifications and asks for permission
+once. If the copy cannot be made, notifications come from terminal-notifier
+itself (Terminal icon).
+
 "Files are being sorted…" is sent only once the model has started; a run that
 sent it always ends with a summary. If the model cannot be started (or its
 file is missing), you get at most one notice a day saying files will wait in
@@ -370,7 +378,8 @@ cd ~/.mac-organizer
 ./uninstall.sh
 ```
 
-Removes the `launchd` agents and `~/Applications/Folder Suggestions.app`. Your
+Removes the `launchd` agents, `~/Applications/Folder Suggestions.app` and the
+folder-icon notifier. Your
 files, `rules.toml`, `~/Notes`, and logs are left in place.
 
 ## Optional Obsidian plugins

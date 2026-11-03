@@ -4,18 +4,25 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import notify
 import plist
 import route
 
 REPO = Path(__file__).resolve().parent
 LABEL_PREFIX = "com.mac-organizer"
 SWEEP_INTERVAL = 600
+NOTIFIER_ID = "com.mac-organizer.notifier"
+FOLDER_ICON = Path("/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/"
+                   "GenericFolderIcon.icns")
+LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+              "LaunchServices.framework/Support/lsregister")
 
 DIRS_TO_CREATE = [
     "~/Inbox",
@@ -263,6 +270,94 @@ def remove_app(apps_dir: Path | None = None) -> None:
         shutil.rmtree(target)
 
 
+def find_notifier_app(which=shutil.which,
+                      fallback_paths=notify.FALLBACK_PATHS) -> Path | None:
+    """The terminal-notifier.app behind the ``terminal-notifier`` command, or None.
+
+    Homebrew's command is a symlink to a wrapper script in ``Cellar/<v>/bin``,
+    next to ``Cellar/<v>/terminal-notifier.app``.
+    """
+    found = which("terminal-notifier")
+    if not found:
+        found = next((p for p in fallback_paths if os.access(p, os.X_OK)), None)
+    if not found:
+        return None
+    real = Path(os.path.realpath(found))
+    for parent in real.parents:
+        if parent.suffix == ".app":
+            return parent
+    beside = real.parent.parent / "terminal-notifier.app"
+    return beside if beside.is_dir() else None
+
+
+def _bundle_info(app: Path) -> dict:
+    try:
+        return plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    except (OSError, plistlib.InvalidFileException):
+        return {}
+
+
+def install_notifier(state: Path, source: Path | None, icon: Path = FOLDER_ICON,
+                     runner=subprocess.run) -> Path | None:
+    """Copy terminal-notifier.app into ``state`` with a folder icon and our own id.
+
+    macOS takes a notification's icon from the app that sends it, and offers no
+    per-notification override, so the copy is what shows a folder instead of
+    the Terminal icon. It is ad-hoc signed again after the edit. An up-to-date
+    copy is kept as is. Returns the copy, or None (notifications then come
+    from terminal-notifier itself).
+    """
+    if source is None or not icon.is_file():
+        return None
+    target = state / notify.NOTIFIER_APP
+    version = _bundle_info(source).get("CFBundleShortVersionString")
+    if target.exists():
+        info = _bundle_info(target)
+        if info.get("CFBundleIdentifier") != NOTIFIER_ID:
+            print(f"folder-icon notifier not built: {target} exists and is not ours",
+                  file=sys.stderr)
+            return None
+        if (info.get("CFBundleShortVersionString") == version
+                and (target / "Contents/Resources/Folder.icns").is_file()):
+            return target
+    building = state / f".{notify.NOTIFIER_APP}.building"
+    try:
+        state.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(building, ignore_errors=True)
+        shutil.copytree(source, building, symlinks=True)
+        shutil.copyfile(icon, building / "Contents/Resources/Folder.icns")
+        info_path = building / "Contents/Info.plist"
+        info = plistlib.loads(info_path.read_bytes())
+        info.update(CFBundleIdentifier=NOTIFIER_ID, CFBundleName="mac-organizer",
+                    CFBundleIconFile="Folder")
+        info_path.write_bytes(plistlib.dumps(info))
+        result = runner(["/usr/bin/codesign", "--force", "--deep", "--sign", "-",
+                         str(building)],
+                        capture_output=True, text=True, check=False, timeout=60)
+        if getattr(result, "returncode", 1) != 0:
+            raise RuntimeError(f"codesign failed: {getattr(result, 'stderr', '')}")
+        if target.exists():
+            shutil.rmtree(target)
+        building.rename(target)
+    except Exception as exc:  # noqa: BLE001 - the icon is cosmetic; setup goes on
+        shutil.rmtree(building, ignore_errors=True)
+        print(f"folder-icon notifier not built: {exc}", file=sys.stderr)
+        return None
+    # Tell Launch Services about the copy so Notification Center finds its icon.
+    try:
+        lsregister = os.environ.get("MAC_ORGANIZER_LSREGISTER", LSREGISTER)
+        runner([lsregister, "-f", str(target)], capture_output=True, check=False, timeout=30)
+    except Exception:  # noqa: BLE001
+        pass
+    return target
+
+
+def remove_notifier(state: Path) -> None:
+    target = state / notify.NOTIFIER_APP
+    if target.exists():
+        shutil.rmtree(target)
+
+
 def set_model_path(local_toml: Path, model: Path) -> str | None:
     """Point smart sort at ``model`` in rules.local.toml. Returns an error, or None.
 
@@ -349,6 +444,9 @@ def main(argv: list[str] | None = None) -> None:
         app = install_app(python, route_py)
         if app is not None:
             print(f"app: {app}")
+        notifier = install_notifier(state_dir(), find_notifier_app())
+        if notifier is not None:
+            print(f"notifications: {notifier}")
     copy_vault_template(REPO / "vault-template", Path("~/Notes").expanduser())
 
     print(f"screenshot dir: {screenshot_dir}")

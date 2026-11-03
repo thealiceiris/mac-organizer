@@ -62,6 +62,7 @@ record that supersedes or amends the old one.
 | [0024](0024-grace-period-for-fresh-downloads.md) | Leave fresh downloads alone for 5 minutes, and never move an open file | Proposed |
 | [0025](0025-recently-sorted-folder.md) | A "Recently Sorted" folder of shortcuts in Downloads | Proposed |
 | [0031](0031-one-line-install.md) | A one-line install that keeps the questions | Accepted |
+| [0032](0032-folder-icon-notifications.md) | Notifications with a folder icon, from our own copy of terminal-notifier | Accepted |
 
 ## Template
 

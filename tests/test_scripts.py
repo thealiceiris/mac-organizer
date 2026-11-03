@@ -82,6 +82,8 @@ def env(tmp_path, repo_copy):
             # a stand-in osacompile that just creates the .app folder
             "MAC_ORGANIZER_OSACOMPILE": str(_stub(
                 bin_dir / "osacompile", '#!/bin/bash\nwhile [ "$1" != "-o" ]; do shift; done\nmkdir -p "$2"\n')),
+            # never register test copies of the notifier app with Launch Services
+            "MAC_ORGANIZER_LSREGISTER": str(_stub(bin_dir / "lsregister", "#!/bin/bash\n")),
         },
     }
 
@@ -524,3 +526,15 @@ def test_get_finds_homebrew_python_off_path(get_env):
     args = plistlib.loads(plist.read_bytes())["ProgramArguments"]
     assert Path(args[0]).resolve() == Path(sys.executable).resolve()
     assert not args[0].startswith(str(get_env["bin_dir"]))
+
+
+def test_uninstall_removes_the_folder_icon_notifier(env):
+    env["vars"]["LAUNCHCTL"] = str(_launchctl_stub(env["bin_dir"]))
+    app = env["home"] / ".local/state/mac-organizer/mac-organizer.app"
+    (app / "Contents").mkdir(parents=True)
+    log = env["home"] / ".local/state/mac-organizer/actions.log"
+    log.write_text("kept")
+    result = _run(env["repo"] / "uninstall.sh", env)
+    assert result.returncode == 0, result.stderr
+    assert not app.exists()
+    assert log.read_text() == "kept"
