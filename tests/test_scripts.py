@@ -361,3 +361,166 @@ def test_install_busy_mac_yes_writes_and_loads_agents(env):
     assert result.returncode == 0, result.stderr
     assert 4 <= len(_agents(env)) <= 5
     assert env["log"].read_text().count("bootstrap") == len(_agents(env))
+
+
+# get.sh: the one-line installer. It clones a source repo (a local one here, not
+# GitHub) into ~/.mac-organizer and hands over to install.sh.
+
+def _git(*args, cwd):
+    subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True,
+        env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
+    )
+
+
+@pytest.fixture
+def get_env(env, tmp_path):
+    source = env["repo"]
+    _git("init", "-q", "-b", "main", cwd=source)
+    _git("add", "-A", cwd=source)
+    _git("commit", "-q", "-m", "init", cwd=source)
+    brew_dir = tmp_path / "brewbin"
+    brew_dir.mkdir()
+    env["vars"].update({
+        "LAUNCHCTL": str(_launchctl_stub(env["bin_dir"])),
+        "MAC_ORGANIZER_REPO_URL": str(source),
+        "MAC_ORGANIZER_BREW_DIRS": str(brew_dir),
+        "MAC_ORGANIZER_FORCE_TTY": "1",
+        "PATH": f"{env['bin_dir']}:{Path(sys.executable).parent}:/usr/bin:/bin",
+    })
+    env["source"] = source
+    env["brew_dir"] = brew_dir
+    env["checkout"] = env["home"] / ".mac-organizer"
+    return env
+
+
+def _get(env, text=""):
+    return subprocess.run(
+        ["bash", str(REPO / "get.sh")], env=env["vars"], input=text,
+        capture_output=True, text=True,
+    )
+
+
+def _old_python(bin_dir: Path):
+    _stub(bin_dir / "python3", "#!/bin/bash\nexit 1\n")
+
+
+def test_get_clones_and_installs(get_env):
+    result = _get(get_env)
+    assert result.returncode == 0, result.stderr
+    assert (get_env["checkout"] / "install.sh").exists()
+    assert (get_env["checkout"] / "rules.toml").exists()
+    assert 4 <= len(_agents(get_env)) <= 5
+
+
+def test_get_updates_an_existing_checkout(get_env):
+    assert _get(get_env).returncode == 0
+    (get_env["source"] / "NEW.md").write_text("new")
+    _git("add", "NEW.md", cwd=get_env["source"])
+    _git("commit", "-q", "-m", "new", cwd=get_env["source"])
+
+    result = _get(get_env)
+    assert result.returncode == 0, result.stderr
+    assert (get_env["checkout"] / "NEW.md").exists()
+
+
+def test_get_keeps_the_safety_question(get_env):
+    """The answer typed in the terminal reaches install.sh's question."""
+    _busy_home(get_env)
+    result = _get(get_env, "n\n")
+    assert result.returncode == 0, result.stderr
+    assert "Load the background sorter now? [y/N]" in result.stdout
+    assert _agents(get_env) == []
+    log = get_env["log"].read_text()
+    assert "bootstrap" not in log and "load -w" not in log
+
+
+def test_get_refuses_without_a_terminal(get_env):
+    """`curl ... | bash` would skip install.sh's question, so refuse it."""
+    del get_env["vars"]["MAC_ORGANIZER_FORCE_TTY"]
+    result = _get(get_env)
+    assert result.returncode != 0
+    assert '/bin/bash -c "$(curl' in result.stderr
+    assert not get_env["checkout"].exists()
+
+
+def test_get_assume_yes_runs_without_a_terminal(get_env):
+    del get_env["vars"]["MAC_ORGANIZER_FORCE_TTY"]
+    get_env["vars"]["MAC_ORGANIZER_ASSUME_YES"] = "1"
+    result = _get(get_env)
+    assert result.returncode == 0, result.stderr
+    assert 4 <= len(_agents(get_env)) <= 5
+
+
+def test_get_refuses_other_systems(get_env):
+    _stub(get_env["bin_dir"] / "uname", "#!/bin/bash\necho Linux\n")
+    result = _get(get_env)
+    assert result.returncode != 0
+    assert "macOS" in result.stderr
+    assert not get_env["checkout"].exists()
+
+
+def test_get_refuses_a_folder_that_is_not_a_checkout(get_env):
+    get_env["checkout"].mkdir()
+    (get_env["checkout"] / "mine.txt").write_text("keep")
+    result = _get(get_env)
+    assert result.returncode != 0
+    assert str(get_env["checkout"]) in result.stderr
+    assert (get_env["checkout"] / "mine.txt").read_text() == "keep"
+
+
+def test_get_explains_missing_git(get_env):
+    _stub(get_env["bin_dir"] / "git", "#!/bin/bash\nexit 1\n")
+    result = _get(get_env)
+    assert result.returncode != 0
+    assert "xcode-select --install" in result.stderr
+
+
+def test_get_without_python_or_homebrew_points_to_brew_sh(get_env):
+    _old_python(get_env["bin_dir"])
+    result = _get(get_env)
+    assert result.returncode != 0
+    assert "https://brew.sh" in result.stderr
+    assert not get_env["checkout"].exists()
+
+
+def _brew_stub(env):
+    """A brew that logs its arguments and 'installs' a Python 3.11+."""
+    return _stub(
+        env["brew_dir"] / "brew",
+        f'#!/bin/bash\necho "brew $@" >> "{env["log"]}"\n'
+        f'ln -sf "{sys.executable}" "{env["brew_dir"]}/python3"\n',
+    )
+
+
+def test_get_asks_before_installing_python_and_no_means_no(get_env):
+    _old_python(get_env["bin_dir"])
+    _brew_stub(get_env)
+    result = _get(get_env, "n\n")
+    assert result.returncode != 0
+    assert "Install Python with Homebrew now? [y/N]" in result.stdout
+    assert "brew install python" in result.stderr
+    assert "brew " not in get_env["log"].read_text()
+    assert not get_env["checkout"].exists()
+
+
+def test_get_installs_python_on_yes_and_uses_it(get_env):
+    _old_python(get_env["bin_dir"])
+    _brew_stub(get_env)
+    result = _get(get_env, "y\n")
+    assert result.returncode == 0, result.stderr
+    assert "brew install python" in get_env["log"].read_text()
+    assert 4 <= len(_agents(get_env)) <= 5
+
+
+def test_get_finds_homebrew_python_off_path(get_env):
+    """A Homebrew Python that isn't first on PATH is still found and used."""
+    _old_python(get_env["bin_dir"])
+    (get_env["brew_dir"] / "python3").symlink_to(sys.executable)
+    result = _get(get_env)
+    assert result.returncode == 0, result.stderr
+    plist = next(iter(_agents(get_env)))
+    args = plistlib.loads(plist.read_bytes())["ProgramArguments"]
+    assert Path(args[0]).resolve() == Path(sys.executable).resolve()
+    assert not args[0].startswith(str(get_env["bin_dir"]))

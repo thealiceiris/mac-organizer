@@ -18,6 +18,27 @@ the model go to `~/Documents/Misc`.
 ## Install
 
 ```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/thealiceiris/mac-organizer/main/get.sh)"
+```
+
+`get.sh`:
+
+1. Refuses to run without a terminal (`curl ... | bash` would hand
+   `install.sh` a pipe and skip its questions), unless
+   `MAC_ORGANIZER_ASSUME_YES=1` is set; refuses anything but macOS; needs
+   `git` (`xcode-select --install`).
+2. Finds Python 3.11+ on `PATH` or in `/opt/homebrew/bin` / `/usr/local/bin`.
+   If there is none, asks before running `brew install python` (and points to
+   https://brew.sh without Homebrew).
+3. Clones the repo into `~/.mac-organizer`, or `git pull --ff-only`s an
+   existing checkout (so the same line updates). Any other folder already at
+   that path is left alone and the script stops.
+4. Runs `install.sh` with that Python first on `PATH`.
+
+`MAC_ORGANIZER_REPO_URL` and `MAC_ORGANIZER_DIR` override the source and the
+destination. The manual equivalent:
+
+```bash
 git clone https://github.com/thealiceiris/mac-organizer.git ~/.mac-organizer
 cd ~/.mac-organizer
 ./install.sh

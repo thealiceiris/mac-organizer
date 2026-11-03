@@ -35,14 +35,7 @@ and paste each step, then press Enter.
 brew install python llama.cpp poppler terminal-notifier
 ```
 
-**2. Download mac-organizer**
-
-```bash
-git clone https://github.com/thealiceiris/mac-organizer.git ~/.mac-organizer
-cd ~/.mac-organizer
-```
-
-**3. Get an AI model** *(optional, recommended)*
+**2. Get an AI model** *(optional, recommended)*
 
 The model is a single large file ending in `.gguf`. One that works well on most
 Macs: go to [huggingface.co](https://huggingface.co), search for
@@ -50,31 +43,44 @@ Macs: go to [huggingface.co](https://huggingface.co), search for
 whose name ends in **Q4_K_M.gguf** (about 4.7 GB). Any other "Instruct" GGUF
 model of a similar size works too.
 
-When the download has finished, move it out of Downloads and tell
-mac-organizer where it is (change the file name to match yours):
+When the download has finished, move it out of Downloads (do this before step
+3, or mac-organizer will tidy it away into Documents/Misc):
 
 ```bash
 mkdir -p ~/models && mv ~/Downloads/*.gguf ~/models/
-python3 setup.py --model ~/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf
 ```
 
-It replies "AI model set". (Without a model, everything still works; documents
-just go to Documents/Misc.)
+(Without a model, everything still works; documents just go to Documents/Misc.)
 
-**4. Switch it on**
+**3. Download mac-organizer and switch it on**
+
+Paste this one line:
 
 ```bash
-./install.sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/thealiceiris/mac-organizer/main/get.sh)"
 ```
 
-It may ask up to two questions. The answer is **No** unless you type `y`:
+It may ask up to three questions. The answer is **No** unless you type `y`:
 
+- **"Install Python with Homebrew now?"** Only if step 1 didn't install
+  Python. Say yes.
 - **"Load the background sorter now?"** This only appears if you already have
   lots of files lying around. Say **No** if you'd like to see what it would do
   first (see *Already have a messy Mac?* below).
 - **"Your Documents folder is empty. Create starter folders…?"** Say yes if
   you'd like a few ready-made folders (Work, School, Finance, Health,
   Personal, Travel).
+
+**4. Tell it where the AI model is** *(if you got one in step 2)*
+
+Change the file name to match yours:
+
+```bash
+cd ~/.mac-organizer
+python3 setup.py --model ~/models/Qwen2.5-7B-Instruct-Q4_K_M.gguf
+```
+
+It replies "AI model set".
 
 **5. Say "Allow" when your Mac asks**
 
@@ -193,8 +199,11 @@ until you say so.
 
 ## Update to the latest version
 
+Paste the same line you installed with. It fetches the latest version and runs
+the install again:
+
 ```bash
-cd ~/.mac-organizer && git pull && ./install.sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/thealiceiris/mac-organizer/main/get.sh)"
 ```
 
 ## Turn it off

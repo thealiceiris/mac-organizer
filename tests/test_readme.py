@@ -98,3 +98,17 @@ def test_plain_readme_is_for_everyone():
     for jargon in ["launchd", "--review-suggestion", "name_regex", "has_installer", "SmartRouter"]:
         assert jargon not in text, jargon
     assert len(text.splitlines()) < 260  # a step-by-step guide, not a reference
+
+
+ONE_LINER = ('/bin/bash -c "$(curl -fsSL '
+             'https://raw.githubusercontent.com/thealiceiris/mac-organizer/main/get.sh)"')
+
+
+def test_docs_show_the_one_line_install():
+    for doc in (README, ADVANCED):
+        text = doc.read_text()
+        assert ONE_LINER in text, doc.name
+        # piping into bash would skip install.sh's question
+        blocks = text.split("```")[1::2]
+        assert not [b for b in blocks if "| bash" in b], doc.name
+    assert ONE_LINER in (README.parent / "get.sh").read_text()
