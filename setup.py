@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import classify
 import notify
 import plist
 import route
@@ -367,7 +368,14 @@ def set_model_path(local_toml: Path, model: Path) -> str | None:
     model = Path(model).expanduser()
     if not model.is_file():
         return f"model file not found: {model}"
-    line = f"model_path = {json.dumps(str(model))}"
+    set_smart_setting(local_toml, "model_path", str(model))
+    set_smart_setting(local_toml, "backend", "llama.cpp")
+    return None
+
+
+def set_smart_setting(local_toml: Path, key: str, value: str) -> None:
+    """Update one smart-sort option without replacing personal rules."""
+    line = f"{key} = {json.dumps(value)}"
     lines = local_toml.read_text().splitlines() if local_toml.exists() else []
     out, in_smart, done = [], False, False
     for raw in lines:
@@ -377,7 +385,7 @@ def set_model_path(local_toml: Path, model: Path) -> str | None:
                 out.append(line)
                 done = True
             in_smart = stripped == "[smart_sort]"
-        elif in_smart and stripped.lstrip("#").strip().startswith("model_path"):
+        elif in_smart and stripped.lstrip("#").strip().split("=", 1)[0].strip() == key:
             if not done:
                 out.append(line)
                 done = True
@@ -388,7 +396,25 @@ def set_model_path(local_toml: Path, model: Path) -> str | None:
             out += ["", "[smart_sort]"]
         out.append(line)
     local_toml.write_text("\n".join(out) + "\n")
-    return None
+
+
+def setup_apple_intelligence() -> None:
+    """Compile and probe the local bridge before selecting the Apple backend."""
+    target = classify.APPLE_BINARY
+    target.parent.mkdir(parents=True, exist_ok=True)
+    building = target.with_suffix(".building")
+    try:
+        subprocess.run(["/usr/bin/xcrun", "swiftc", "-parse-as-library", "-O",
+                        "-target", "arm64-apple-macosx26.0",
+                        str(REPO / "apple_classify.swift"), "-o", str(building)], check=True)
+        subprocess.run([str(building), "--check"], check=True, timeout=30)
+        building.replace(target)
+    finally:
+        building.unlink(missing_ok=True)
+    local = REPO / "rules.local.toml"
+    write_local_rules(REPO / "rules.local.default.toml", local)
+    set_smart_setting(local, "backend", "apple")
+    print("AI backend set: Apple Intelligence (on-device; no GGUF model needed)")
 
 
 def remove_agent_plists() -> None:
@@ -405,6 +431,9 @@ def main(argv: list[str] | None = None) -> None:
     so it can never arrange for the sorter to start at the next login.
     """
     args = sys.argv[1:] if argv is None else argv
+    if "--apple-intelligence" in args:
+        setup_apple_intelligence()
+        return
     if "--model" in args:
         # python3 setup.py --model ~/models/<file>.gguf : only sets the model path
         i = args.index("--model")

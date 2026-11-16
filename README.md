@@ -37,6 +37,20 @@ brew install python llama.cpp poppler terminal-notifier
 
 **2. Get an AI model** *(optional, recommended)*
 
+**Apple Intelligence alternative:** On an Apple Silicon Mac with macOS 26+
+and Apple Intelligence enabled, you can use Apple's on-device model instead.
+Skip the GGUF download below. From your mac-organizer checkout, run:
+
+```bash
+python3 setup.py --apple-intelligence
+```
+
+This requires the Xcode Command Line Tools (`xcode-select --install`). It builds
+a local helper, checks model availability, and selects Apple Intelligence.
+You don't need `llama.cpp` or step 4 when using this option. To prepare folders
+and rules without starting automatic sorting, run `python3 setup.py` rather
+than `./install.sh`.
+
 The model is a single large file ending in `.gguf`. One that works well on most
 Macs: go to [huggingface.co](https://huggingface.co), search for
 **Qwen2.5-7B-Instruct-GGUF**, open the **Files** tab and download the file

@@ -52,6 +52,7 @@ class SmartSettings:
     model_path: Path | None
     documents_root: Path
     expand: tuple[str, ...] = ("Academics",)
+    backend: str = "llama.cpp"
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,9 @@ def load_config(rules_path: Path, local_path: Path | None) -> Config:
     local = _read_toml(local_path)
     smart = {**shipped.get("smart_sort", {}), **local.get("smart_sort", {})}
     model = smart.get("model_path")
+    backend = smart.get("backend", "llama.cpp")
+    if backend not in ("llama.cpp", "apple"):
+        raise ValueError('smart_sort.backend must be "llama.cpp" or "apple"')
     expand = smart.get("expand", ["Academics"])
     if isinstance(expand, str):  # expand = "School" means one folder, not its letters
         expand = [expand]
@@ -144,6 +148,7 @@ def load_config(rules_path: Path, local_path: Path | None) -> Config:
         model_path=Path(model).expanduser() if model else None,
         documents_root=Path(smart.get("documents_root", "~/Documents")).expanduser(),
         expand=tuple(str(x) for x in expand),
+        backend=backend,
     )
     sug = {**shipped.get("suggest", {}), **local.get("suggest", {})}
     suggest_settings = SuggestSettings(
@@ -480,19 +485,20 @@ class SmartRouter:
     """
 
     def __init__(self, settings: SmartSettings, state: Path,
-                 classifier_factory=classify.LlamaServer, notifier=None, read_only=False,
+                 classifier_factory=None, notifier=None, read_only=False,
                  now: float | None = None):
         self.settings = settings
         self.read_only = read_only  # planning: never write the verdict cache
         self.state = Path(state)
-        self.factory = classifier_factory
+        self.factory = classifier_factory or (
+            classify.AppleIntelligence if settings.backend == "apple" else classify.LlamaServer)
         self.notifier = notifier if notifier is not None else NullNotifier()
         self.batch = Batch()
         model = settings.model_path
         self.disabled = not settings.enabled
         self.backoff = not read_only and self._backoff_active(time.time() if now is None else now)
-        self.permanent = (self.disabled or model is None or not model.is_file()
-                          or self.backoff)
+        missing_model = settings.backend == "llama.cpp" and (model is None or not model.is_file())
+        self.permanent = self.disabled or missing_model or self.backoff
         self._down = self.permanent
         self.outage = False  # the model was needed but broken this run
         self._announced = False
@@ -985,7 +991,8 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
             print(f"rules not loaded, nothing moved: {exc}", file=sys.stderr)
             return 1
         rules = config.rules
-        if not args.dry_run and config.smart.model_path is not None:
+        if (not args.dry_run and config.smart.backend == "llama.cpp"
+                and config.smart.model_path is not None):
             try:  # a server orphaned by a SIGKILLed run never outlives it by long
                 classify.reap_stale(default_state_dir(), config.smart.model_path)
             except Exception as exc:  # noqa: BLE001 - never blocks routing
@@ -1007,7 +1014,7 @@ def main(argv: list[str] | None = None, *, classifier_factory=None, notifier=Non
             # A dry run never starts the model, writes state or notifies.
             state = default_state_dir()
             router = SmartRouter(config.smart, state,
-                                 classifier_factory or classify.LlamaServer,
+                                 classifier_factory,
                                  notifier if notifier is not None else notify.Notifier(state))
             try:
                 memory.detect_corrections(state, router.candidates(), now)
@@ -1333,7 +1340,7 @@ def _backlog_plan(paths: list[Path], config: Config, classifier_factory) -> int:
     import backlog
 
     router = SmartRouter(config.smart, default_state_dir(),
-                         classifier_factory or classify.LlamaServer, NullNotifier(),
+                         classifier_factory, NullNotifier(),
                          read_only=True)
     try:
         backlog.plan(paths, config, router, time.time())

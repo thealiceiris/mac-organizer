@@ -7,3 +7,4 @@ __pycache__/
 .superpowers/
 /rules.local.toml
 /rules.toml.v1.bak
+/.build/

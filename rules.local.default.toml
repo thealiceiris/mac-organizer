@@ -2,6 +2,7 @@
 # [[rule]]s here are evaluated before the shipped rules.
 
 [smart_sort]
+# backend = "apple"  # run python3 setup.py --apple-intelligence first
 # model_path = "~/models/your-model.gguf"  # required for smart sort: any GGUF chat model
 
 # Example: send anything with "cv" or "resume" in its name to a folder.
