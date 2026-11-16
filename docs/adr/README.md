@@ -64,6 +64,12 @@ record that supersedes or amends the old one.
 | [0031](0031-one-line-install.md) | A one-line install that keeps the questions | Accepted |
 | [0032](0032-folder-icon-notifications.md) | Notifications with a folder icon, from our own copy of terminal-notifier | Accepted |
 
+### Apple Intelligence (2026-11-16)
+
+| # | Decision | Status |
+|---|---|---|
+| [0033](0033-apple-intelligence-backend.md) | Optional on-device Foundation Models backend | Accepted; amends 0009 |
+
 ## Template
 
 ```markdown

@@ -33,7 +33,14 @@ have_tool() {
   return 1
 }
 MISSING=""
-have_tool llama-server || MISSING="$MISSING llama.cpp"
+# Apple's on-device backend needs neither llama-server nor a GGUF model.
+if ! "$PYTHON" -c 'import pathlib, sys, tomllib
+p = pathlib.Path(sys.argv[1])
+data = tomllib.loads(p.read_text()) if p.exists() else {}
+raise SystemExit(0 if data.get("smart_sort", {}).get("backend") == "apple" else 1)
+' "$REPO/rules.local.toml"; then
+  have_tool llama-server || MISSING="$MISSING llama.cpp"
+fi
 have_tool pdftotext || MISSING="$MISSING poppler"
 have_tool terminal-notifier || MISSING="$MISSING terminal-notifier"
 if [ -n "$MISSING" ]; then

@@ -72,6 +72,32 @@ Then open Obsidian and "Open folder as vault" → `~/Notes`.
 
 ## Setting up your folders
 
+### Apple Intelligence backend
+
+On Apple Silicon with macOS 26+, enable Apple Intelligence in System Settings
+and wait for its on-device model to download. With Xcode Command Line Tools
+installed, run from the checkout:
+
+```bash
+python3 setup.py --apple-intelligence
+python3 setup.py
+```
+
+The first command builds `.build/apple-classify`, checks availability, and sets
+`[smart_sort] backend = "apple"` in `rules.local.toml`. The second prepares
+folders/rules without enabling background sorting. Neither moves existing files.
+Use `route.py --backlog` to preview AI decisions before enabling `./install.sh`.
+
+The Swift helper uses only `SystemLanguageModel.default` (on-device), with
+guided structured output. It receives extracted document text over stdin and
+returns JSON; the Python router still validates folder names and confidence.
+Samples are limited to 4,000 characters to leave room in Apple's context window.
+Refused or oversized requests use the existing safe fallback, not a guessed
+destination. An unavailable model uses the existing outage/backoff handling.
+No GGUF model or llama-server is needed. `setup.py --model <file.gguf>` selects
+llama.cpp again.
+Re-run `setup.py --apple-intelligence` after updating the Swift helper.
+
 mac-organizer suggests folders and asks. The answer is always no until you say
 yes: nothing is created and nothing is started without your approval.
 
